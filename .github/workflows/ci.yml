@@ -1,0 +1,60 @@
+name: public-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-tests:
+    name: Rust CPU-safe tests
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+      - name: Test workspace without accelerator features
+        run: cargo test --workspace --no-default-features
+
+  python-tests:
+    name: Python tests
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run Python suite
+        run: python3 -m unittest discover -s scripts/tests
+
+  clippy:
+    name: Clippy
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal --component clippy
+      - name: Deny warnings across workspace targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rustfmt:
+    name: Rust formatting
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal --component rustfmt
+      - name: Check formatting
+        run: cargo fmt --check

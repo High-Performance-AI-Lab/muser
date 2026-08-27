@@ -1,0 +1,103 @@
+[package]
+name = "muser-bench"
+description = "Fail-closed raw-nanosecond benchmark executor for standalone Muser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "muser-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "muser-forward-evidence"
+path = "src/forward.rs"
+
+[[bin]]
+name = "muser-capture-evidence"
+path = "src/capture.rs"
+
+[[bin]]
+name = "muser-token-fixture"
+path = "src/fixture.rs"
+
+[[bin]]
+name = "muser-greedy-evidence"
+path = "src/greedy.rs"
+
+[[bin]]
+name = "muser-kvpack-qualify"
+path = "src/kvpack.rs"
+
+[[bin]]
+name = "muser-dflash-qualify"
+path = "src/dflash.rs"
+
+[[bin]]
+name = "muser-dflash-inspect"
+path = "src/dflash_inspect.rs"
+
+[[bin]]
+name = "muser-dflash-extract"
+path = "src/dflash_extract.rs"
+
+[[bin]]
+name = "muser-vision-qualify"
+path = "src/vision.rs"
+
+[[bin]]
+name = "muser-vision-inspect"
+path = "src/vision_inspect.rs"
+
+[[bin]]
+name = "muser-ane-qualify"
+path = "src/ane.rs"
+
+[[bin]]
+name = "muser-target-ane-qualify"
+path = "src/target_ane.rs"
+required-features = ["ane-coreml"]
+
+[[bin]]
+name = "muser-remote-qualify"
+path = "src/remote.rs"
+
+[[bin]]
+name = "muser-metal-phase-diagnostic"
+path = "src/metal_phase.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "muser-m16-bench"
+path = "src/m16.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "muser-dflash-m0"
+path = "src/dflash_m0.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "muser-composite-dflash-qualify"
+path = "src/composite_dflash.rs"
+required-features = ["metal"]
+
+[features]
+default = []
+metal = ["muser-engine/metal", "dep:metal"]
+ane-coreml = ["metal", "muser-engine/ane-coreml"]
+
+[dependencies]
+muser-engine = { path = "../muser-engine" }
+muser-kvpack = { path = "../muser-kvpack" }
+muser-cluster = { path = "../muser-cluster" }
+kvpack = { workspace = true }
+kvpack-handoff = { workspace = true }
+metal = { version = "=0.33.0", path = "../../third_party/metal", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+base64 = "0.22"
+half = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

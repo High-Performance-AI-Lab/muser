@@ -1,0 +1,27 @@
+{
+  "schema": "muser.dflash-tuning-freeze.v1",
+  "status": "frozen",
+  "selected_verify_length": 7,
+  "allowed_verify_lengths": [3, 7, 15],
+  "selection_method": "operator-authorized product selection from the 2026-08-21 fixed-window natural-text sweep: verify length 7 had the best decode ratio on both measured cells and recovered more robustly through cold acceptance patches than length 15; the prior synthetic-only length-15 selection is superseded",
+  "source_evidence": {
+    "ledger": "goal-parity ledger 2026-08 (private campaign record) — Spec re-measurement at the fixed window, and a verify-length verdict (2026-08-21)",
+    "sweep_results": [
+      "muser-receipt://release-program-20260821/vlen-rust-2048-v3/RESULT.json",
+      "muser-receipt://release-program-20260821/vlen-rust-2048-v7/RESULT.json",
+      "muser-receipt://release-program-20260821/vlen-rust-2048-v15/RESULT.json",
+      "muser-receipt://release-program-20260821/vlen-python-8192-v3/RESULT.json",
+      "muser-receipt://release-program-20260821/vlen-python-8192-v7/RESULT.json",
+      "muser-receipt://release-program-20260821/vlen-python-8192-v15/RESULT.json"
+    ],
+    "decode_ratios_llama_over_muser": {
+      "rust_2048": {"3": 0.8323677370761384, "7": 0.9453838935240267, "15": 0.931540591094667},
+      "python_8192": {"3": 0.8378686472854988, "7": 1.042442658811113, "15": 0.4995906565103631}
+    },
+    "exactness_scope": "The rust-2048 sweep matched exact tokens at all three lengths; the python-8192 comparator streams differed at all three lengths, so that cell informs relative policy robustness rather than an exactness claim.",
+    "selected_default_commit": "6db7a43",
+    "selected_default_requalification": "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase3/dflash-v7/requal-2048-attempt-1/RESULT.json",
+    "selected_default_requalification_muser_sha256": "aaf0f049dba6bea530ad0dcff13aab82aeb4f3641994231091d49bc66a3b13b2",
+    "selected_default_requalification_exact_tokens": true
+  }
+}

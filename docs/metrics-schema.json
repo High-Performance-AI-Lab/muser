@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://muser.dev/schemas/metrics/v1.json",
+  "title": "Muser Metrics Contract v1",
+  "description": "Wire contract between the muser inference engine and the web dashboard. MetricsSnapshot is returned by GET /snapshot and carried by authenticated GET /stream WebSocket schema-v2 frames; GET /metrics is Prometheus text and GET /telemetry is compatibility SSE. Numbers are tagged measured, target, or mock. See docs/launch-claims.md before any result reaches launch copy.",
+  "oneOf": [
+    { "$ref": "#/$defs/MetricsSnapshot" },
+    { "$ref": "#/$defs/StreamMessage" },
+    { "$ref": "#/$defs/WebSocketMessage" }
+  ],
+
+  "$defs": {
+
+    "schema_version": {
+      "const": 1,
+      "description": "Contract major version. Bumped on any breaking change to field shapes. Dashboard MUST refuse mismatched majors."
+    },
+
+    "MetricsSnapshot": {
+      "type": "object",
+      "description": "Complete engine state. Returned by GET /snapshot and carried as data in the authenticated /stream WebSocket snapshot keyframe; GET /metrics is Prometheus text and GET /telemetry remains a compatibility SSE keyframe route. Every section is a pure function of engine state so it can be re-serialized cheaply from live counters.",
+      "additionalProperties": false,
+      "required": ["schema_version", "generated_at", "uptime_s", "nodes", "kv", "economics", "transfers", "wire", "sessions", "tricks"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schema_version" },
+        "generated_at": { "type": "string", "format": "date-time", "description": "Wall-clock ISO-8601 UTC when this snapshot was serialized." },
+        "engine_clock_s": { "type": "number", "description": "Monotonic engine clock (seconds, float). Deltas reference this, not wall time." },
+        "uptime_s": { "type": "number", "minimum": 0 },
+        "_events": {
+          "type": "array",
+          "description": "UI-convenience extension (note the leading underscore): the live lifecycle event log, newest-first, for the dashboard's event panel. Additive and ignorable by clients that only consume stable sections. The server has no simulator fallback.",
+          "items": { "$ref": "#/$defs/SessionEvent" }
+        },
+        "_honesty": {
+          "type": "object",
+          "description": "UI-convenience extension: per-section and per-field provenance tags using measured/target/mock. Emitted by the live server in /snapshot, /stream snapshots, and /telemetry compatibility keyframes. See docs/telemetry.md for authoritative field accounting.",
+          "additionalProperties": true
+        },
+        "_telemetry_viewers": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: measured live count of currently-open /telemetry SSE and /stream WebSocket viewers."
+        },
+        "_telemetry_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: [measured] lifetime count of GET /snapshot + GET /telemetry polls this process has served, kept out of wire.requests_per_s so that gauge describes product traffic only."
+        },
+        "_active_connections": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: [measured] live count of open sockets (dashboard viewers included), distinct from wire.connected_clients which counts active inference sessions."
+        },
+        "_queue_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: [measured] requests accepted but not yet past first-token emission."
+        },
+        "_overload_rejections": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: [measured] counter of requests rejected by load shedding."
+        },
+        "_lock_recoveries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UI-convenience extension: [measured] counter of poisoned-lease recoveries; non-zero means a generation panicked and the process kept serving."
+        },
+        "_decode": {
+          "type": "object",
+          "description": "UI-convenience extension: [measured] live decode throughput, kept separate from the historical Node.tok_s precedent figure.",
+          "additionalProperties": false,
+          "required": ["completion_traffic_tok_s_10s", "completion_tokens"],
+          "properties": {
+            "completion_traffic_tok_s_10s": { "type": "number", "minimum": 0, "description": "Completion traffic in tokens/s over the ten-second rolling window; not request-local decode throughput." },
+            "completion_tokens": { "type": "integer", "minimum": 0, "description": "Process-lifetime total completion tokens produced." }
+          }
+        },
+        "_remote": {
+          "type": "object",
+          "description": "UI-convenience extension: [measured] remote-prefill health. A degraded disaggregated route is otherwise indistinguishable from one nobody exercised: both leave transfers[] empty.",
+          "additionalProperties": false,
+          "required": ["receive_failures", "fallbacks"],
+          "properties": {
+            "receive_failures": { "type": "integer", "minimum": 0, "description": "Counter: authenticated GX10 remote-prefill receive attempts that failed verification/commit and did not become a Transfer entry." },
+            "fallbacks": { "type": "integer", "minimum": 0, "description": "Counter: requests that fell back to local prefill after a remote-prefill attempt did not complete." },
+            "last_error": { "type": "string", "description": "Most recent remote-prefill failure message, if any." }
+          }
+        },
+        "_phases": {
+          "type": "object",
+          "description": "Measured completed-sample request phase totals/means plus true last-request decode throughput.",
+          "additionalProperties": false,
+          "required": ["queue", "prefill", "sampling", "grammar", "detokenization", "enqueue_write", "dflash_draft", "dflash_target_verify", "last_request_decode_tok_s"],
+          "properties": {
+            "queue": { "$ref": "#/$defs/PhaseMeasurement" },
+            "prefill": { "$ref": "#/$defs/PhaseMeasurement" },
+            "sampling": { "$ref": "#/$defs/PhaseMeasurement" },
+            "grammar": { "$ref": "#/$defs/PhaseMeasurement" },
+            "detokenization": { "$ref": "#/$defs/PhaseMeasurement" },
+            "enqueue_write": { "$ref": "#/$defs/PhaseMeasurement" },
+            "dflash_draft": { "$ref": "#/$defs/PhaseMeasurement" },
+            "dflash_target_verify": { "$ref": "#/$defs/PhaseMeasurement" },
+            "last_request_decode_tok_s": { "type": "number", "minimum": 0 }
+          }
+        },
+        "cluster": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Static-ish cluster identity for the header banner.",
+          "properties": {
+            "model": { "type": "string", "examples": ["Muse Glimmer-30B"] },
+            "quant": { "type": "string", "examples": ["Q4"] },
+            "weights_bytes": { "type": "integer", "description": "On-disk/in-mem weight footprint. [measured] ~15.9 GB Q4.", "examples": [17071390720] },
+            "layers_total": { "type": "integer", "examples": [52] },
+            "layers_nope": { "type": "integer", "description": "Position-free full-attention layers {3,7..51}. [measured] 13.", "examples": [13] },
+            "layers_swa": { "type": "integer", "description": "Sliding-window layers, window 2048. [measured] 39.", "examples": [39] },
+            "swa_window": { "type": "integer", "examples": [2048] }
+          }
+        },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
+        "kv": { "$ref": "#/$defs/KvCache" },
+        "economics": { "$ref": "#/$defs/Economics" },
+        "transfers": { "type": "array", "items": { "$ref": "#/$defs/Transfer" } },
+        "wire": { "$ref": "#/$defs/Wire" },
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/Session" } },
+        "tricks": { "type": "array", "items": { "$ref": "#/$defs/Trick" } },
+        "specdec": { "$ref": "#/$defs/SpecDec" }
+      }
+    },
+
+    "PhaseMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples", "total_ms", "mean_ms"],
+      "properties": {
+        "samples": { "type": "integer", "minimum": 0 },
+        "total_ms": { "type": "number", "minimum": 0 },
+        "mean_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "Node": {
+      "type": "object",
+      "description": "One physical inference node. The v0.1 roles are GX10/GB10 CUDA prefill/storage and M3 Ultra Muser Metal decode. The live node collector is not wired and nodes is currently empty.",
+      "additionalProperties": false,
+      "required": ["id", "role", "kind", "state"],
+      "properties": {
+        "id": { "type": "string", "examples": ["gx10-0", "gx10-1", "gx10-2", "m3ultra-0"] },
+        "role": { "enum": ["prefill", "decode"] },
+        "kind": { "enum": ["gx10", "gb10", "m3ultra"] },
+        "state": { "enum": ["idle", "prefilling", "decoding", "offline"] },
+        "tok_s": { "type": "number", "minimum": 0, "description": "Current node throughput. No node collector is wired in v0.1; the live server emits an empty nodes array." },
+        "util": { "type": "number", "minimum": 0, "maximum": 1, "description": "Compute utilization fraction 0..1." },
+        "mem_used": { "type": "integer", "minimum": 0, "description": "Bytes." },
+        "mem_total": { "type": "integer", "minimum": 0, "description": "Bytes." },
+        "power_w": { "type": "number", "minimum": 0 },
+        "temp_c": { "type": "number" }
+      }
+    },
+
+    "KvCache": {
+      "type": "object",
+      "description": "Aggregate KV cache state plus the Muse structural split. The two-class split is the story: 13 NoPE layers grow unbounded (position-free), 39 SWA layers are ring-windowed at 2048.",
+      "additionalProperties": false,
+      "required": ["total_bytes", "tokens_cached", "structural"],
+      "properties": {
+        "total_bytes": { "type": "integer", "minimum": 0 },
+        "tokens_cached": { "type": "integer", "minimum": 0, "description": "Sum of live KV positions across sessions." },
+        "capacity_bytes": { "type": "integer", "minimum": 0, "description": "Resident KV budget for occupancy meter." },
+        "structural": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nope_growing_bytes", "swa_windowed_bytes"],
+          "properties": {
+            "nope_growing_bytes": { "type": "integer", "minimum": 0, "description": "KV bytes in the 13 NoPE full layers. Grows with context; relocation = memcpy." },
+            "swa_windowed_bytes": { "type": "integer", "minimum": 0, "description": "KV bytes in the 39 SWA layers, bounded by window 2048." }
+          }
+        },
+        "per_session": {
+          "type": "array",
+          "description": "Per-session KV footprint for the stacked occupancy bar.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["session", "bytes"],
+            "properties": {
+              "session": { "type": "string" },
+              "bytes": { "type": "integer", "minimum": 0 },
+              "nope_bytes": { "type": "integer", "minimum": 0 },
+              "swa_bytes": { "type": "integer", "minimum": 0 },
+              "tokens": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+
+    "Economics": {
+      "type": "object",
+      "description": "THE HERO PANEL. kvpack cache economics: value quantified as GB-served-from-cache vs GB-recomputed, and the derived wall-time / compute / energy saved. All raw fields are monotonic counters since engine start (the dashboard rate-derives); `derived` and `hit_rate` are convenience projections the engine computes so every client agrees.",
+      "additionalProperties": false,
+      "required": ["cache_hits", "cache_misses", "hit_rate", "bytes_served_from_cache", "bytes_recomputed", "restore_ops", "prefill_ops", "derived", "tiers"],
+      "properties": {
+        "cache_hits": { "type": "integer", "minimum": 0, "description": "Counter: resume requests satisfied by a kvpack restore." },
+        "cache_misses": { "type": "integer", "minimum": 0, "description": "Counter: requests that fell back to full prefill (no usable cached KV)." },
+        "hit_rate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Derived = cache_hits / (cache_hits + cache_misses). 0 when denominator 0." },
+        "bytes_served_from_cache": { "type": "integer", "minimum": 0, "description": "Counter: KV bytes materialized via restore instead of recompute. The 'GB from cache' number." },
+        "bytes_recomputed": { "type": "integer", "minimum": 0, "description": "Counter: KV bytes produced by prefill (misses + partials). The 'GB recomputed' number." },
+        "restore_ops": { "type": "integer", "minimum": 0, "description": "Counter of kvpack restore operations." },
+        "prefill_ops": { "type": "integer", "minimum": 0, "description": "Counter of full-prefill operations." },
+        "session_continuation_hits": { "type": "integer", "minimum": 0, "description": "[measured] Counter: prompt continuations of the same live session (CacheSource::CurrentSession) -- no restore ran, the KV was never evicted. Real and useful, but not a served hit; kept out of cache_hits/bytes_served_from_cache/tiers by the attribution fix so it never inflates the headline hit rate. muser-kvpack::economics::EconomicsCounters::record_session_continuation. See docs/kvpack-economics.md." },
+        "disagg_prefills": { "type": "integer", "minimum": 0, "description": "[measured] Counter: disaggregated remote prefills -- compute ran on another node (e.g. GX10), KV installed over the wire. Real prefill work, not a cache restore, so it is counted here instead of cache_hits/tiers by the same attribution fix. muser-kvpack::economics::EconomicsCounters::record_disagg_prefill. See docs/kvpack-economics.md." },
+        "disagg_bytes_installed": { "type": "integer", "minimum": 0, "description": "[measured] Bytes installed by disaggregated remote prefills -- the caller-supplied authenticated transfer size (docs/kvpack-economics.md notes this now sources from the GX10 RemoteReceiveReceipt), never folded into bytes_served_from_cache." },
+        "restore_speedup": { "type": "number", "minimum": 0, "description": "Live restore-vs-prefill ratio (rolling), measured once a real paired RestoreTiming updates the EMA; otherwise zero/mock." },
+        "derived": {
+          "type": "object",
+          "description": "Engine-computed savings. Formulas documented in metrics-schema.md; emitted so all clients agree on the headline.",
+          "additionalProperties": false,
+          "required": ["seconds_saved", "gflops_avoided", "joules_saved"],
+          "properties": {
+            "seconds_saved": { "type": "number", "minimum": 0, "description": "Cumulative positive difference between paired local-prefill and restore wall times. Measured only after a paired timing; otherwise zero/mock." },
+            "gflops_avoided": { "type": "number", "minimum": 0, "description": "Model/topology-derived linear weight-matmul floor, not a measured hardware counter. Updated only for timed restores and tagged mock by the current three-value honesty vocabulary." },
+            "joules_saved": { "type": "number", "minimum": 0, "description": "Unavailable without a calibrated power source; current server emits zero/mock." }
+          }
+        },
+        "tiers": {
+          "type": "object",
+          "description": "Storage tiers the restore was served from, with occupancy and hit attribution. Powers the tier-breakdown bar.",
+          "additionalProperties": false,
+          "required": ["resident", "ssd", "remote"],
+          "properties": {
+            "resident": { "$ref": "#/$defs/StorageTier", "description": "In unified memory / VRAM. Fastest." },
+            "ssd": { "$ref": "#/$defs/StorageTier", "description": "Local NVMe kvpack artifacts." },
+            "remote": { "$ref": "#/$defs/StorageTier", "description": "Remote KV pool served over the authenticated GX10 Handoff V2 transport (mTLS-TCP). Renamed from rdma_pool: the shipping transport is mTLS-TCP, not RDMA/RoCE -- RDMA/RoCE is a roadmap fast-lane upgrade (docs/muser-architecture.md), never a description of what today's tier actually runs over." }
+          }
+        }
+      }
+    },
+
+    "StorageTier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resident_bytes", "hits"],
+      "properties": {
+        "resident_bytes": { "type": "integer", "minimum": 0, "description": "Bytes currently held in THIS tier (name kept flat for wire compactness; per-tier occupancy)." },
+        "capacity_bytes": { "type": "integer", "minimum": 0 },
+        "hits": { "type": "integer", "minimum": 0, "description": "Counter: restores served from this tier." }
+      }
+    },
+
+    "Transfer": {
+      "type": "object",
+      "description": "One active disaggregated KV handoff (prefill node -> decode node). Phase reflects the Muse amortization schedule: stream the 13 NoPE tiles DURING prefill, ship the 39 SWA planes only at the end.",
+      "additionalProperties": false,
+      "required": ["session", "src_node", "dst_node", "bytes_total", "bytes_sent", "phase"],
+      "properties": {
+        "session": { "type": "string" },
+        "src_node": { "type": "string", "examples": ["gx10-0"] },
+        "dst_node": { "type": "string", "examples": ["m3ultra-0"] },
+        "bytes_total": { "type": "integer", "minimum": 0 },
+        "bytes_sent": { "type": "integer", "minimum": 0 },
+        "phase": { "enum": ["streaming_nope", "shipping_swa", "done"], "description": "Handoff phase vocabulary. The current snapshot retains completed receipts only and therefore emits done." },
+        "throughput_gbps": { "type": "number", "minimum": 0, "description": "Measured effective installed-payload rate in gigabits/s from committed bytes and receiver transfer time. The v0.1 release floor is a three-handoff median of at least 3.0 Gbps; this field makes no generic link-class claim." },
+        "hidden_pct": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of this transfer overlapped with (hidden behind) prefill compute. [target] gate G-B2 >= 0.95." },
+        "_control_ns": { "type": "integer", "minimum": 0, "description": "UI-convenience extension: the receipt's own control-channel round-trip time, nanoseconds. [measured]. Part of the phase split alongside _accept_ns -- the commit itself is already visible as throughput_gbps." },
+        "_accept_ns": { "type": "integer", "minimum": 0, "description": "UI-convenience extension: the receipt's own producer-wait/accept time, nanoseconds. [measured]." }
+      }
+    },
+
+    "Wire": {
+      "type": "object",
+      "description": "Server-edge IO and latency SLOs.",
+      "additionalProperties": false,
+      "required": ["ingress_gbps", "egress_gbps", "requests_per_s", "connected_clients", "ttft_ms", "itl_ms"],
+      "properties": {
+        "ingress_gbps": { "type": "number", "minimum": 0 },
+        "egress_gbps": { "type": "number", "minimum": 0 },
+        "requests_per_s": { "type": "number", "minimum": 0 },
+        "connected_clients": { "type": "integer", "minimum": 0, "description": "Active inference clients (not dashboard viewers)." },
+        "ttft_ms": { "$ref": "#/$defs/Percentiles", "description": "Time to first token." },
+        "itl_ms": { "$ref": "#/$defs/Percentiles", "description": "Inter-token latency (p50/p95 of per-token emission gaps during decode). [measured]." }
+      }
+    },
+
+    "Percentiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p50", "p95"],
+      "properties": {
+        "p50": { "type": "number", "minimum": 0 },
+        "p95": { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "Session": {
+      "type": "object",
+      "description": "One active inference session.",
+      "additionalProperties": false,
+      "required": ["id", "tokens", "node", "age_s"],
+      "properties": {
+        "id": { "type": "string" },
+        "tokens": { "type": "integer", "minimum": 0 },
+        "node": { "type": "string", "description": "Node currently serving decode." },
+        "age_s": { "type": "number", "minimum": 0 },
+        "origin": { "enum": ["created", "resumed", "migrated"], "description": "How this session began - resumed/migrated flag the differentiator." }
+      }
+    },
+
+    "SessionEvent": {
+      "type": "object",
+      "description": "One lifecycle event retained in the snapshot event list. WebSocket changed-field deltas carry the updated list rather than a separate event frame.",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "session"],
+      "properties": {
+        "ts": { "type": "string", "format": "date-time" },
+        "kind": { "enum": ["created", "saved", "resumed", "migrated", "evicted"] },
+        "session": { "type": "string" },
+        "detail": {
+          "type": "object",
+          "description": "Free-form context for the toast/log row.",
+          "properties": {
+            "from_node": { "type": "string" },
+            "to_node": { "type": "string" },
+            "tokens": { "type": "integer" },
+            "bytes": { "type": "integer" },
+            "tier": { "enum": ["resident", "ssd", "remote"] },
+            "seconds_saved": { "type": "number" }
+          }
+        }
+      }
+    },
+
+    "Trick": {
+      "type": "object",
+      "description": "One qualified optimization and its contribution. The current server emits an empty list until exact-identity qualification passes.",
+      "additionalProperties": false,
+      "required": ["name", "active", "measured_contribution"],
+      "properties": {
+        "name": { "enum": ["relocation", "gqa_headpack", "retrieval_specdec", "disaggregation", "ane_concurrency", "kvpack_restore", "dispatch_batching"] },
+        "active": { "type": "boolean" },
+        "measured_contribution": { "$ref": "#/$defs/TrickContribution" }
+      }
+    },
+
+    "TrickContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value", "label"],
+      "properties": {
+        "kind": { "enum": ["multiplier", "percent", "ratio", "flag", "killed"], "description": "How to read `value`: multiplier=x throughput, percent=+% gain, ratio=X-fold, flag=boolean capability (1=on, render as a checkmark), killed=abandoned lever (value is not a win; render as a killed/struck-through state, never as a positive contribution)." },
+        "value": { "type": "number", "description": "Contribution value. The live server emits no Trick objects until the corresponding exact-identity qualification passes." },
+        "label": { "type": "string", "examples": ["qualified optimization"] },
+        "baseline": { "type": "string", "description": "The exact baseline or proof point to which value is relative." },
+        "measured": { "type": "boolean", "description": "true = the stated fact (a win, OR a kill verdict) is [measured]/proven this program; false = [target]/[mock]/pending. For kind=killed, measured=true means the KILL is proven, not that the lever is a win." }
+      }
+    },
+
+    "SpecDec": {
+      "type": "object",
+      "description": "Live retrieval prompt-lookup speculative-decode telemetry. High-frequency; drives the accept-rate sparkline and the accepted-run ticker.",
+      "additionalProperties": false,
+      "required": ["accept_rate", "accepted_run"],
+      "properties": {
+        "accept_rate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Rolling fraction of drafted tokens accepted." },
+        "accepted_run": { "type": "integer", "minimum": 0, "description": "Length of the most recent accepted draft run (0 on a reject)." },
+        "draft_len": { "type": "integer", "minimum": 0, "description": "Tokens proposed in the last verify step (K-parallel)." },
+        "per_weight_read_speedup": { "type": "number", "minimum": 1, "description": "Effective speedup per weight read. Omitted by the live server because no in-process measurement supplies it." },
+        "cumulative_accepted": { "type": "integer", "minimum": 0 },
+        "cumulative_drafted": { "type": "integer", "minimum": 0 },
+        "ane_route_failures": { "type": "integer", "minimum": 0, "description": "[measured] Counter: DFlash draft attempts that fell off the public-CoreML ANE route and were retried/served on the Metal route." },
+        "metal_route_failures": { "type": "integer", "minimum": 0, "description": "[measured] Counter: DFlash draft attempts that failed on the Metal route." }
+      }
+    },
+
+    "StreamMessage": {
+      "type": "object",
+      "description": "One GET /telemetry compatibility-SSE snapshot envelope.",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "t", "data"],
+      "properties": {
+        "v": { "$ref": "#/$defs/schema_version" },
+        "type": { "const": "snapshot" },
+        "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per-connection sequence. Gap => client should request/await a fresh snapshot." },
+        "t": { "type": "number", "description": "Engine monotonic clock (s, float) at emit." },
+        "data": { "$ref": "#/$defs/MetricsSnapshot" }
+      }
+    },
+
+    "Hello": {
+      "type": "object",
+      "description": "First GET /stream WebSocket text frame.",
+      "additionalProperties": false,
+      "required": ["v", "type", "schema", "snapshot_interval_s", "ping_interval_s"],
+      "properties": {
+        "v": { "const": 2 },
+        "type": { "const": "hello" },
+        "schema": { "const": "muser.telemetry.v2" },
+        "snapshot_interval_s": { "const": 10 },
+        "ping_interval_s": { "const": 5 }
+      }
+    },
+
+    "WebSocketDataMessage": {
+      "type": "object",
+      "description": "GET /stream WebSocket snapshot or changed-top-level-field delta.",
+      "additionalProperties": false,
+      "required": ["v", "type", "seq", "data"],
+      "properties": {
+        "v": { "const": 2 },
+        "type": { "enum": ["snapshot", "section_delta"] },
+        "seq": { "type": "integer", "minimum": 0 },
+        "data": { "type": "object" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "snapshot" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/MetricsSnapshot" } } } }
+      ]
+    },
+
+    "WebSocketMessage": {
+      "description": "One GET /stream WebSocket JSON text frame. Ping is a WebSocket control frame and is not represented here.",
+      "oneOf": [
+        { "$ref": "#/$defs/Hello" },
+        { "$ref": "#/$defs/WebSocketDataMessage" }
+      ]
+    },
+
+    "StreamError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "examples": ["schema_mismatch", "resync_required", "internal"] },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

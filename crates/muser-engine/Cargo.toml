@@ -1,0 +1,45 @@
+[package]
+name = "muser-engine"
+description = "Muse Glimmer-30B CPU oracle and Metal text, vision, and DFlash inference engine with experimental public-CoreML ANE support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+readme = "README.md"
+
+[lib]
+name = "muser_engine"
+path = "src/lib.rs"
+
+[features]
+# Default is CPU-only: reference oracle + gguf + quant, buildable on any host
+# (CI, GX10-side sanity). `metal` turns on the Mac GPU decode/prefill drivers
+# and is only meaningful under target_os = "macos" (gated in lib.rs).
+default = []
+metal = ["dep:metal", "dep:objc", "dep:libloading"]
+ane-coreml = ["dep:objc"]
+# Explicit release lane: tests behind this feature require the pinned real
+# artifact and fail if its environment, bytes, or fixture identity is absent.
+release-real-model = []
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fancy-regex = { workspace = true }
+memmap2 = { workspace = true }
+rayon = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+libm = "0.2"
+half = "2"
+sha2 = { workspace = true }
+rand = { workspace = true }
+# kvpack is consumed by muser-kvpack, not directly here (see workspace Cargo.toml).
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "=0.33.0", path = "../../third_party/metal", optional = true }
+objc = { version = "0.2", optional = true }
+libloading = { version = "0.8", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,35 @@
+Muser private release candidate notices
+=======================================
+
+Original Muser code is Copyright (c) 2026 Muser contributors and is available
+under either the Apache License, Version 2.0, or the MIT License.
+
+The GGUF parser, Muse configuration/loader, mmap weight access, quantized CPU
+math, BPE tokenizer, activation capture, and CPU reference graph were adapted
+from the private Ferrite research tree at commit
+`83cfd55584dde68a9affca9c76af6a6124a3cf32`. That source is Copyright (c) 2026
+Alvaro Videla and licensed under the MIT License. Source paths are recorded in
+`docs/extraction-manifest.md` and `docs/release-provenance.md`.
+
+Binary bundles may include a Muse-specific bridge, dynamic libraries, and
+`llama.metallib` built from llama.cpp and ggml at commit
+`89e0aa6fd362617d9073e0dafc18e41241521572`. llama.cpp and ggml are Copyright
+(c) 2023-2026 The ggml authors and are distributed under the MIT License. Any
+bundle containing these artifacts must include this NOTICE and the complete
+upstream copyright and permission notice as `licenses/llama.cpp-LICENSE`.
+
+The source bundle includes `kvpack-core`, `kvpack`, and `kvpack-handoff` from
+the coordinated `0.1.0-alpha.2` worktree. They are Copyright their respective
+contributors and distributed under the MIT or Apache-2.0 licenses. Their
+license texts and generated dependency inventory are reproduced under
+`licenses/kvpack-*`.
+
+Rust dependency identities and declared licenses are recorded in the SPDX SBOM
+and `licenses/rust-dependencies.json`; license and notice files present in the
+exact Cargo source packages are reproduced under `licenses/rust/`.
+
+Model weights, tokenizers, Meta artifacts, converted Core ML artifacts, and
+benchmark outputs are not included in this source repository. A sealed private
+candidate may include the qualified, reproducibly converted public-CoreML ANE
+package, but never model weights. Muser is independent and is not affiliated
+with, sponsored by, or endorsed by Meta or the Muse model authors.

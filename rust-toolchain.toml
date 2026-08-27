@@ -1,0 +1,6 @@
+# Pinned to match Ferrite's toolchain (see docs/muser-architecture.md §3, "Build").
+# Update this file, don't drift it: muser's golden-capture parity gate assumes the
+# same rustc/LLVM float codegen as the Ferrite reference it diffs against.
+[toolchain]
+channel = "1.93.1"
+components = ["rustfmt", "clippy"]

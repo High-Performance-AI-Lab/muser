@@ -1,0 +1,128 @@
+{
+  "schema": "muser.native-onboarding-identity.v1",
+  "status": "frozen",
+  "source_runtime_identity_sha256": "59a7e8c919745711d2af537f391e799c48d20148a7e1ecd8c9d7b7a87cf9102e",
+  "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
+  "checkpoint": {
+    "repository": "RedHatAI/Muse-Glimmer-30B-NVFP4",
+    "revision": "d5109a1d187c27bd1734e81844e71aa4d964e66a",
+    "directory": "RedHatAI-Muse-Glimmer-30B-NVFP4-d5109a1",
+    "total_bytes": 23409256035,
+    "artifact_sha256": "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
+    "files": [
+      {
+        "filename": ".gitattributes",
+        "bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "filename": "README.md",
+        "bytes": 3798,
+        "sha256": "57d0f6486b20fd35ea4e1a327a79b38f0a7d54f663077065d6c9423a94cb98a3"
+      },
+      {
+        "filename": "chat_template.jinja",
+        "bytes": 7167,
+        "sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e"
+      },
+      {
+        "filename": "config.json",
+        "bytes": 21140,
+        "sha256": "554f41ec2cee1897c3ddff634b150fd6a0c2cba2822ef02dce636db33a4a70e8"
+      },
+      {
+        "filename": "generation_config.json",
+        "bytes": 185,
+        "sha256": "3c19298aaee5e91409c71fd2417bbf5910df7e3aa0afd65b5a9e05ff850c95c7"
+      },
+      {
+        "filename": "model-00001-of-00002.safetensors",
+        "bytes": 19999768552,
+        "sha256": "adbb49484526d0d252f59f147634505db3b0df7c76b392d120145770c6af71b4"
+      },
+      {
+        "filename": "model-00002-of-00002.safetensors",
+        "bytes": 3380973016,
+        "sha256": "a530af78f13588a6cd2223e2f1956ef458dc236266dd045fbeb80a18acaff353"
+      },
+      {
+        "filename": "model.safetensors.index.json",
+        "bytes": 269298,
+        "sha256": "63aeab8fe9256732e5800b87e8eb95f95df82d369edd1a456b91b1c405482b28"
+      },
+      {
+        "filename": "processor_config.json",
+        "bytes": 1084,
+        "sha256": "97e2a486dd9866b81f40cf4b8bc0c9ced9a7cd8a5bc65aa4cc2f4de0712dae77"
+      },
+      {
+        "filename": "recipe.yaml",
+        "bytes": 342,
+        "sha256": "b8ea1ba2017a0366dfde3fe92b81036a644dc2bb9ab558c3846af798e2f0b06d"
+      },
+      {
+        "filename": "tokenizer.json",
+        "bytes": 28129897,
+        "sha256": "c9dbee66967b58f31a7c27f723c3760da3526ccd0427578e8905b0abb0031c4d"
+      },
+      {
+        "filename": "tokenizer_config.json",
+        "bytes": 79986,
+        "sha256": "4dda8d9709954d7b3f1d917319f9b915f1b995f77fbbd8fb9379e56842d84f1b"
+      }
+    ],
+    "runtime_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/spark-runtime-v13.json",
+    "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
+  },
+  "producer_image": {
+    "tag": "muser/gx10-vllm-native:593b96a",
+    "image_id": "sha256:578888b29e42138a0821b68f94d952a4acc958660232e53d3ebff3ae9d933750",
+    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-image-593b96a-retrospective-20260823.json",
+    "receipt_sha256": "163783f1f98ae341fc2425409e885b886e54a4274468a263c4476939e3327e45"
+  },
+  "vllm_overlay": {
+    "adapter_sha256": "c49c171ffdeaa34fcff5a9be80af3256be245ed81902ce35d97cc825e197d1f7",
+    "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-adapter-593b96a-retrospective-20260823.json",
+    "receipt_sha256": "695f9ad0941181123b1bdc4eaea4db2f2249f7a18fd45217c92b328652b45e68"
+  },
+  "rope_cache": {
+    "schema": "muser.vllm-rope-cache.v2",
+    "bytes": 67108864,
+    "sha256": "948949af0c4b0106dd26071d839e9643688c4c5a24f57a0fe9872d2ad49b2131"
+  },
+  "consumer": {
+    "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf",
+    "bytes": 19552725248,
+    "sha256": "dc9865ef9770324b1b5d7bdebc7fc6b2c9fb125084fe2461b6f5168c552193b1",
+    "tokenizer_sha256": "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
+    "chat_template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
+    "context_policy_sha256": "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",
+    "target_cache_identity_sha256": "a3bbd72fc16116322b5c9dc701f155d35349146b2af3e3b8465732b7df1eabd0",
+    "repack_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/mac-native-repack-receipt-v1.json",
+    "repack_receipt_sha256": "ccac21c54d765f62f15acf0c496b946cd129db5f6ca5f026be13cd5705e9da21"
+  },
+  "onboarding_qualification": {
+    "schema": "muser.native-text-onboarding.v1",
+    "prompt_tokens": 2048,
+    "output_tokens": 256,
+    "repetitions": 3,
+    "prompt_sha256": "149ac0d9c37c957823e53c0637b52a38f2ac601089dbda9f98eec4bc5f369030",
+    "require_exact_tokens": true,
+    "require_deterministic_remote_output": true,
+    "full_logits": {
+      "mode": "bounded-drift",
+      "maximum_absolute": 11.0,
+      "maximum_mean_absolute": 1.25
+    },
+    "basis": "muser-receipt://nvfp4-f4-native-text-p4-accelerator-20260817/20260817T074427Z-44c761545afa47d78f8407734f8d2145.command.log"
+  },
+  "evidence": [
+    "release/gx10-cross-vendor-math-v1.json",
+    "muser-receipt://wizard-validation-20260823/attempt-7-native-live-20260824T042900Z/logs/test-rope-decisive-20260824T043946Z.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/source-match-verdict.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/registry-after.json"
+  ],
+  "ledger_basis": "release/gx10-cross-vendor-math-v1.json pins the canonical NCO RoPE cache; docs/goal-parity-ledger-2026-08.md pins final-image provenance"
+}

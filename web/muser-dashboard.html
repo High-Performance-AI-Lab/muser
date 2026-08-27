@@ -1,0 +1,1894 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>MUSER — Muse Glimmer-30B</title>
+<meta name="description" content="Live process telemetry for the Muser inference engine serving Muse Glimmer-30B." />
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230b0e16'/><path d='M20 46 L38 16 L38 46 Z' fill='%2346e6d2'/><path d='M38 16 L46 30 L38 46 Z' fill='%23f5b942'/><circle cx='30' cy='34' r='2.4' fill='%230b0e16'/></svg>" />
+<style>
+/* ============================================================= TOKENS */
+:root{
+  color-scheme: light dark;
+  /* light palette (bare :root = light; canonical) */
+  --ground:#eef1f7; --grain:#e5e9f2;
+  --surface:#ffffff; --surface-2:#f5f7fc; --raised:#ffffff;
+  --border:rgba(18,24,40,.10); --border-strong:rgba(18,24,40,.16);
+  --ink:#141a26; --ink-dim:#4c576b; --ink-mute:#7c879b;
+  --glimmer:#0a9d8c; --glimmer-soft:rgba(10,157,140,.14);
+  --gold:#9a6b12; --gold-bright:#b4801c; --gold-soft:rgba(154,107,18,.12);
+  --cat-teal:#0a8f7c; --cat-violet:#6a4fd0; --cat-amber:#9a6b12; --cat-rose:#b93f74;
+  --good:#12864f; --warn:#a8730c; --crit:#c0392f;
+  --shadow:0 1px 2px rgba(18,24,40,.06),0 8px 30px rgba(18,24,40,.08);
+  --glow:none;
+  --scan:rgba(18,24,40,.03);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#080b12; --grain:#0d1119;
+    --surface:#111624; --surface-2:#161c2c; --raised:#1a2233;
+    --border:rgba(150,170,205,.11); --border-strong:rgba(150,170,205,.20);
+    --ink:#e9eef8; --ink-dim:#9aa6bd; --ink-mute:#616e88;
+    --glimmer:#46e6d2; --glimmer-soft:rgba(70,230,210,.10);
+    --gold:#f5b942; --gold-bright:#ffca55; --gold-soft:rgba(245,185,66,.10);
+    --cat-teal:#2a9c8e; --cat-violet:#8264e0; --cat-amber:#b9871f; --cat-rose:#d15589;
+    --good:#46c479; --warn:#e0a63a; --crit:#e5606a;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 18px 46px rgba(0,0,0,.5);
+    --glow:0 0 24px rgba(70,230,210,.14);
+    --scan:rgba(180,210,255,.022);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#080b12; --grain:#0d1119;
+  --surface:#111624; --surface-2:#161c2c; --raised:#1a2233;
+  --border:rgba(150,170,205,.11); --border-strong:rgba(150,170,205,.20);
+  --ink:#e9eef8; --ink-dim:#9aa6bd; --ink-mute:#616e88;
+  --glimmer:#46e6d2; --glimmer-soft:rgba(70,230,210,.10);
+  --gold:#f5b942; --gold-bright:#ffca55; --gold-soft:rgba(245,185,66,.10);
+  --cat-teal:#2a9c8e; --cat-violet:#8264e0; --cat-amber:#b9871f; --cat-rose:#d15589;
+  --good:#46c479; --warn:#e0a63a; --crit:#e5606a;
+  --shadow:0 1px 0 rgba(255,255,255,.02),0 18px 46px rgba(0,0,0,.5);
+  --glow:0 0 24px rgba(70,230,210,.14);
+  --scan:rgba(180,210,255,.022);
+}
+
+/* ============================================================= BASE */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1200px 600px at 80% -10%, var(--glimmer-soft), transparent 60%),
+    radial-gradient(900px 500px at 0% 110%, var(--gold-soft), transparent 55%),
+    var(--ground);
+  color:var(--ink);
+  font-family:system-ui,-apple-system,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  overflow-x:hidden; min-height:100vh;
+}
+.mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+a{color:var(--glimmer);text-decoration:none}
+:focus-visible{outline:2px solid var(--glimmer);outline-offset:2px;border-radius:4px}
+
+/* ============================================================= HEADER */
+header{
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:14px clamp(14px,3vw,30px);
+  background:color-mix(in srgb, var(--ground) 78%, transparent);
+  backdrop-filter:saturate(140%) blur(14px);
+  -webkit-backdrop-filter:saturate(140%) blur(14px);
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex;align-items:center;gap:13px;min-width:0}
+.mark{width:34px;height:34px;flex:0 0 auto;border-radius:9px;
+  background:linear-gradient(150deg,#0b0e16,#1a2233);border:1px solid var(--border-strong);
+  display:grid;place-items:center;box-shadow:var(--glow)}
+.mark svg{width:22px;height:22px;display:block}
+.wordmark{display:flex;flex-direction:column;line-height:1.05;min-width:0}
+.wordmark b{
+  font-size:22px;font-weight:800;letter-spacing:.14em;
+  background:linear-gradient(92deg,var(--glimmer),var(--ink) 55%,var(--gold));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.wordmark small{font-size:11px;color:var(--ink-dim);letter-spacing:.02em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.wordmark small b{font-weight:600;color:var(--ink);-webkit-text-fill-color:currentColor}
+.hspace{flex:1 1 auto;min-width:8px}
+.hgroup{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.badge{
+  display:inline-flex;align-items:center;gap:7px;
+  font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  padding:6px 11px;border-radius:999px;border:1px solid var(--border-strong);
+  color:var(--gold-bright);background:var(--gold-soft);white-space:nowrap;
+}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--gold-bright);
+  box-shadow:0 0 0 0 var(--gold-bright);animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--gold-bright) 55%,transparent)}
+  70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.stat-inline{display:flex;flex-direction:column;align-items:flex-end;line-height:1.1}
+.stat-inline span{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-mute)}
+.stat-inline b{font-size:14px;font-weight:700;color:var(--ink)}
+.tbtn{
+  display:inline-grid;place-items:center;width:38px;height:38px;border-radius:10px;
+  border:1px solid var(--border-strong);background:var(--surface-2);color:var(--ink-dim);
+  cursor:pointer;font-size:16px;transition:color .15s,border-color .15s,background .15s}
+.tbtn:hover{color:var(--glimmer);border-color:var(--glimmer)}
+
+/* ============================================================= LAYOUT */
+main{padding:clamp(14px,2.4vw,26px);max-width:1560px;margin:0 auto;
+  display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}
+.panel{
+  background:linear-gradient(180deg,var(--surface),var(--surface-2));
+  border:1px solid var(--border);border-radius:16px;padding:18px;
+  box-shadow:var(--shadow);position:relative;overflow:hidden;min-width:0}
+.panel::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent 0 3px,var(--scan) 3px 4px);
+  opacity:.6;mix-blend-mode:normal}
+.panel > *{position:relative}
+.span12{grid-column:span 12}.span8{grid-column:span 8}.span7{grid-column:span 7}
+.span6{grid-column:span 6}.span5{grid-column:span 5}.span4{grid-column:span 4}
+.span3{grid-column:span 3}
+@media(max-width:1080px){
+  .span8,.span7,.span6,.span5,.span4{grid-column:span 12}
+  .span3{grid-column:span 6}
+}
+@media(max-width:620px){ .span3{grid-column:span 12} main{gap:13px} }
+
+.phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-mute);
+  font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.ptitle{font-size:16px;font-weight:700;letter-spacing:-.01em;color:var(--ink);margin:2px 0 0}
+.phint{font-size:11.5px;color:var(--ink-dim)}
+
+/* number tags */
+.tag{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  padding:1.5px 5px;border-radius:5px;vertical-align:middle;margin-left:5px;line-height:1.4}
+.t-meas{color:var(--good);background:color-mix(in srgb,var(--good) 16%,transparent);border:1px solid color-mix(in srgb,var(--good) 34%,transparent)}
+.t-tgt{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);border:1px solid color-mix(in srgb,var(--warn) 32%,transparent)}
+.t-mock{color:var(--ink-mute);background:color-mix(in srgb,var(--ink-mute) 15%,transparent);border:1px solid color-mix(in srgb,var(--ink-mute) 30%,transparent)}
+
+
+.badge.live{color:var(--glimmer);background:var(--glimmer-soft);border-color:color-mix(in srgb,var(--glimmer) 40%,var(--border-strong))}
+.badge.live .dot{background:var(--glimmer);box-shadow:0 0 0 0 var(--glimmer)}
+.badge.err{color:var(--crit);background:color-mix(in srgb, var(--crit) 14%, transparent)}
+.badge.err .dot{background:var(--crit);animation:none}
+.nodes.two{grid-template-columns:repeat(2,minmax(0,1fr));max-width:920px}
+.node .biglbl{min-height:1.2em}
+.empty{color:var(--ink-mute);font-size:13px;padding:10px 4px}
+main.stale .panel{opacity:.55;transition:opacity .3s}
+
+/* ============================================================= TOPOLOGY */
+.nodes{display:grid;gap:12px;grid-template-columns:repeat(4,1fr)}
+@media(max-width:900px){.nodes{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:460px){.nodes{grid-template-columns:1fr}}
+.node{border:1px solid var(--border);border-radius:13px;padding:13px;background:var(--raised);
+  position:relative;overflow:hidden;transition:border-color .3s}
+.node.decode{border-color:color-mix(in srgb,var(--cat-teal) 45%,var(--border))}
+.node.on{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--glimmer) 30%,transparent)}
+.node .role{position:absolute;top:0;right:0;font-size:9px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;padding:4px 8px;border-bottom-left-radius:9px;color:var(--ground)}
+.node.prefill .role{background:var(--cat-violet)}
+.node.decode .role{background:var(--cat-teal)}
+.node .nid{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px}
+.node .kind{font-size:10.5px;color:var(--ink-mute);letter-spacing:.03em}
+.led{width:8px;height:8px;border-radius:50%;background:var(--ink-mute);flex:0 0 auto}
+.led.prefilling{background:var(--cat-violet);box-shadow:0 0 8px var(--cat-violet)}
+.led.decoding{background:var(--cat-teal);box-shadow:0 0 8px var(--cat-teal)}
+.led.idle{background:var(--ink-mute)}
+.node .big{font-size:26px;font-weight:800;margin:9px 0 1px;letter-spacing:-.02em}
+.node .biglbl{font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-mute)}
+.metrows{margin-top:11px;display:grid;gap:6px}
+.metrow{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;font-size:11px}
+.metrow .k{color:var(--ink-mute);letter-spacing:.04em;text-transform:uppercase;font-size:9.5px}
+.metrow .v{text-align:right;color:var(--ink);font-weight:600}
+.bar{height:5px;border-radius:3px;background:var(--surface-2);overflow:hidden;border:1px solid var(--border)}
+.bar > i{display:block;height:100%;border-radius:3px;background:var(--glimmer);transition:width .3s ease}
+.statepill{position:absolute;bottom:11px;right:13px;font-size:9px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-mute)}
+
+/* ============================================================= PIPELINE */
+.canvas-wrap{position:relative;width:100%;border-radius:12px;overflow:hidden;
+  border:1px solid var(--border);background:var(--grain)}
+#pipe{display:block;width:100%;height:320px}
+@media(max-width:640px){#pipe{height:260px}}
+.pipelegend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:11px;color:var(--ink-dim)}
+.pipelegend span{display:inline-flex;align-items:center;gap:6px}
+.swatch{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+.schedule{margin-top:12px;display:grid;grid-template-columns:1fr;gap:6px}
+.track{position:relative;height:22px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden}
+.track .seg{position:absolute;top:0;bottom:0;display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ground)}
+.tracklbl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-mute)}
+
+/* ============================================================= ECONOMICS */
+.econ-hero{display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:stretch}
+@media(max-width:760px){.econ-hero{grid-template-columns:1fr}}
+.econ-vs{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px}
+.econ-big{text-align:center}
+.econ-big .v{font-size:clamp(30px,6vw,52px);font-weight:800;letter-spacing:-.03em;line-height:1;
+  font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.econ-big.cache .v{color:var(--gold-bright);text-shadow:0 0 30px color-mix(in srgb,var(--gold) 40%,transparent)}
+.econ-big.recomp .v{color:var(--ink-dim)}
+.econ-big .u{font-size:12px;color:var(--ink-mute);margin-top:3px;letter-spacing:.12em;text-transform:uppercase}
+.econ-vs .arrow{font-size:11px;color:var(--ink-mute);text-align:center;line-height:1.3;letter-spacing:.05em}
+.derived{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:6px}
+.dcard{border:1px solid var(--border);border-radius:12px;padding:13px;background:var(--raised);text-align:left}
+.dcard .dv{font-size:clamp(18px,3.2vw,25px);font-weight:800;letter-spacing:-.02em;color:var(--gold-bright);
+  font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.dcard .dl{font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-mute);margin-top:4px}
+.dcard .ds{font-size:10.5px;color:var(--ink-dim);margin-top:2px}
+.hitmeter{margin-top:16px}
+.hitrow{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.hitrow b{font-size:22px;font-weight:800;color:var(--glimmer);font-family:ui-monospace,Menlo,monospace}
+.tierbar{height:26px;border-radius:8px;overflow:hidden;display:flex;border:1px solid var(--border);background:var(--surface-2)}
+.tierbar > i{display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700;
+  color:var(--ground);letter-spacing:.04em;transition:width .4s ease;min-width:0;overflow:hidden;white-space:nowrap}
+.tierlegend{display:flex;gap:14px;margin-top:8px;font-size:10.5px;color:var(--ink-dim);flex-wrap:wrap}
+.spark{display:block;width:100%;height:44px}
+
+/* ============================================================= KV STRUCTURE */
+.kv-split{display:grid;gap:14px}
+.kvrow .kvhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.kvrow .kvhead b{font-size:13px}
+.kvrow .kvhead .sub{font-size:10.5px;color:var(--ink-mute)}
+.kvbar{height:30px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative;background:var(--surface-2)}
+.kvbar > i{display:block;height:100%;transition:width .5s cubic-bezier(.2,.7,.2,1)}
+.kvbar .cap{position:absolute;top:0;bottom:0;width:2px;background:var(--crit);opacity:.7}
+.kvnote{font-size:11px;color:var(--ink-dim);margin-top:5px;line-height:1.45}
+.persess{margin-top:6px;height:20px;border-radius:6px;overflow:hidden;display:flex;gap:2px;background:transparent}
+.persess > i{height:100%;border-radius:3px;min-width:2px}
+
+/* ============================================================= TRICKS */
+.tricks{display:grid;gap:11px}
+.trick{border:1px solid var(--border);border-radius:12px;padding:12px 13px;background:var(--raised)}
+.trick .th{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.trick .tn{font-weight:700;font-size:13px}
+.trick .tled{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 7px var(--good);flex:0 0 auto}
+.trick .tled.off{background:var(--ink-mute);box-shadow:none}
+.trick .tv{margin-left:auto;font-weight:800;font-size:15px;color:var(--glimmer);font-family:ui-monospace,Menlo,monospace}
+.trick .tl{font-size:11px;color:var(--ink-dim)}
+.trick .tmeter{height:5px;border-radius:3px;background:var(--surface-2);border:1px solid var(--border);margin-top:8px;overflow:hidden}
+.trick .tmeter > i{display:block;height:100%;background:linear-gradient(90deg,var(--cat-violet),var(--glimmer))}
+.specrun{display:flex;gap:3px;margin-top:9px;align-items:flex-end;height:26px}
+.specrun i{width:9px;border-radius:2px 2px 0 0;background:var(--cat-rose);opacity:.85;transition:height .15s}
+.specstat{display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--ink-dim);flex-wrap:wrap}
+.specstat b{color:var(--ink);font-family:ui-monospace,Menlo,monospace}
+
+/* ============================================================= WIRE */
+.wiregrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:520px){.wiregrid{grid-template-columns:1fr}}
+.gauge{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--raised)}
+.gauge .gl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-mute)}
+.gauge .gv{font-size:20px;font-weight:800;font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+.gauge .gv small{font-size:11px;color:var(--ink-mute);font-weight:600}
+.histo{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.pctrow{display:flex;justify-content:space-between;font-size:11px;padding:5px 0;border-bottom:1px dashed var(--border)}
+.pctrow .k{color:var(--ink-mute)}
+.pctrow .v{font-family:ui-monospace,Menlo,monospace;font-weight:700}
+
+/* ============================================================= SESSIONS */
+.scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px;border:1px solid var(--border)}
+table{border-collapse:collapse;width:100%;font-size:12px;min-width:420px}
+th{position:sticky;top:0;text-align:left;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-mute);padding:8px 11px;background:var(--surface-2);border-bottom:1px solid var(--border);font-weight:700}
+td{padding:8px 11px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+.oc{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 7px;border-radius:5px}
+.oc.created{color:var(--ink-dim);background:color-mix(in srgb,var(--ink-mute) 16%,transparent)}
+.oc.resumed{color:var(--glimmer);background:var(--glimmer-soft);border:1px solid color-mix(in srgb,var(--glimmer) 34%,transparent)}
+.oc.migrated{color:var(--gold-bright);background:var(--gold-soft);border:1px solid color-mix(in srgb,var(--gold) 34%,transparent)}
+.oc.saved{color:var(--cat-violet);background:color-mix(in srgb,var(--cat-violet) 15%,transparent)}
+.oc.evicted{color:var(--ink-mute);background:color-mix(in srgb,var(--ink-mute) 14%,transparent)}
+.evlog{display:flex;flex-direction:column;gap:0;max-height:290px;overflow-y:auto}
+.ev{display:grid;grid-template-columns:auto auto 1fr;gap:9px;align-items:center;padding:8px 4px;
+  border-bottom:1px solid var(--border);font-size:11.5px}
+.ev .ets{color:var(--ink-mute);font-family:ui-monospace,Menlo,monospace;font-size:10.5px}
+.ev .emsg{color:var(--ink-dim)}
+.ev.flash{animation:flash 1.1s ease-out}
+@keyframes flash{0%{background:var(--glimmer-soft)}100%{background:transparent}}
+.diffbanner{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--ink-dim);
+  margin-bottom:12px;padding:9px 12px;border-radius:9px;border:1px dashed var(--border-strong);background:var(--surface-2)}
+.diffbanner b{color:var(--gold-bright)}
+
+footer{max-width:1560px;margin:6px auto 30px;padding:0 clamp(14px,3vw,30px);
+  display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--ink-mute)}
+footer .leg{display:inline-flex;align-items:center;gap:6px}
+#wDecTok.idle{font-size:12px;color:var(--ink-mute);font-weight:500}
+#kvTotal.idle{color:var(--ink-mute)}
+
+/* ============================================================= CHAT */
+.chatwrap{display:flex;flex-direction:column;gap:12px}
+.chatlog{display:flex;flex-direction:column;gap:10px;max-height:400px;overflow-y:auto;padding:2px 4px}
+.chatmsg{display:flex;flex-direction:column;gap:3px;max-width:min(78ch,94%)}
+.chatmsg.user{align-self:flex-end;align-items:flex-end}
+.chatmsg .who{font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-mute);font-family:ui-monospace,Menlo,monospace}
+.chatmsg .bubble{border:1px solid var(--border);border-radius:12px;padding:10px 13px;background:var(--raised);
+  white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;font-size:13.5px}
+.chatmsg.user .bubble{background:var(--glimmer-soft);border-color:color-mix(in srgb,var(--glimmer) 35%,var(--border))}
+.chatmsg.error .bubble{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 35%,var(--border));font-size:12px}
+.chatmsg details.reasoning{border-left:2px solid var(--border-strong);padding:2px 0 2px 10px;max-width:100%;margin-bottom:6px}
+.chatmsg details.reasoning summary{cursor:pointer;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-mute);font-family:ui-monospace,Menlo,monospace}
+.chatmsg details.reasoning .rtext{color:var(--ink-mute);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:5px}
+.caret{display:inline-block;width:8px;height:14px;translate:0 2px;margin-left:2px;border-radius:2px;
+  background:var(--glimmer);animation:blink 1.05s steps(2,start) infinite}
+@keyframes blink{50%{opacity:0}}
+.chatrow{display:flex;gap:9px;align-items:flex-end}
+.chatrow textarea{flex:1;resize:none;min-height:46px;max-height:150px;padding:11px 13px;border-radius:11px;
+  border:1px solid var(--border-strong);background:var(--raised);color:var(--ink);font:inherit;font-size:13.5px;line-height:1.45}
+.chatrow textarea::placeholder{color:var(--ink-mute)}
+.chatmeta{display:flex;gap:14px;align-items:center;font-size:11px;color:var(--ink-dim);min-height:15px;flex-wrap:wrap}
+.chatkeyrow{display:flex;gap:9px;align-items:center}
+.chatkeyrow input{flex:1;padding:9px 11px;border-radius:9px;border:1px solid var(--border-strong);background:var(--raised);
+  color:var(--ink);font-size:13px;font-family:ui-monospace,"SF Mono",Menlo,monospace}
+
+/* ============================================================= ADD-NODE WIZARD */
+.phint-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.addnode-btn{border-radius:9px;padding:6px 12px;font-size:11.5px;font-weight:700;letter-spacing:.02em;
+  cursor:pointer;border:1px solid color-mix(in srgb,var(--glimmer) 45%,var(--border-strong));
+  background:var(--glimmer-soft);color:var(--glimmer);white-space:nowrap}
+.addnode-btn:hover{background:color-mix(in srgb,var(--glimmer) 22%,var(--glimmer-soft))}
+
+.topo-cta{border:1px dashed var(--border-strong);border-radius:13px;padding:20px;text-align:center;
+  color:var(--ink-dim);font-size:12.5px;grid-column:1/-1}
+.topo-cta p{margin:0 0 13px;line-height:1.55;max-width:44em;margin-left:auto;margin-right:auto}
+.topo-cta .btn.primary{padding:9px 18px}
+
+.regnodes{display:grid;gap:12px;grid-template-columns:repeat(3,1fr);margin-top:12px}
+@media(max-width:900px){.regnodes{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.regnodes{grid-template-columns:1fr}}
+.regcard{border:1px solid var(--border);border-radius:13px;padding:13px;background:var(--raised)}
+.regcard .rn-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.regcard .rn-name{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:7px}
+.regcard .rn-host{font-size:11px;color:var(--ink-mute);margin-top:3px}
+.rn-daemon{width:8px;height:8px;border-radius:50%;background:var(--ink-mute);flex:0 0 auto}
+.rn-daemon.up{background:var(--good);box-shadow:0 0 6px var(--good)}
+.rn-daemon.down{background:var(--crit)}
+.rn-state{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  padding:3px 8px;border-radius:999px;white-space:nowrap;flex:0 0 auto}
+.rn-state.draft{color:var(--ink-mute);background:color-mix(in srgb,var(--ink-mute) 16%,transparent)}
+.rn-state.preflight-ok,.rn-state.deployed,.rn-state.enrolled,.rn-state.blocked{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
+.rn-state.healthy{color:var(--good);background:color-mix(in srgb,var(--good) 16%,transparent)}
+.rn-state.error{color:var(--crit);background:color-mix(in srgb,var(--crit) 15%,transparent)}
+.regcard .rn-rows{margin-top:10px;display:grid;gap:5px;font-size:11px}
+.regcard .rn-rows .k{color:var(--ink-mute);text-transform:uppercase;letter-spacing:.05em;font-size:9.5px}
+.regcard .rn-rows .v{color:var(--ink);font-weight:600;font-family:ui-monospace,Menlo,monospace}
+.regcard .rn-err{margin-top:8px;font-size:10.5px;color:var(--crit);line-height:1.4;overflow-wrap:anywhere}
+
+.modal-backdrop{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--ground) 55%, black 35%);padding:20px}
+.modal-backdrop[hidden]{display:none}
+.modal-card{width:100%;max-width:440px;max-height:86vh;overflow-y:auto;
+  background:linear-gradient(180deg,var(--surface),var(--surface-2));
+  border:1px solid var(--border-strong);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.modal-head h3{margin:0;font-size:16px;font-weight:700;color:var(--ink)}
+.modal-x{border:none;background:transparent;color:var(--ink-mute);font-size:14px;cursor:pointer;
+  width:28px;height:28px;border-radius:8px;display:grid;place-items:center}
+.modal-x:hover{color:var(--ink);background:var(--surface-2)}
+.modal-lede{font-size:12px;color:var(--ink-dim);line-height:1.55;margin:6px 0 16px}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-mute);margin-bottom:5px}
+.field label .optional{text-transform:none;letter-spacing:0;color:var(--ink-mute);font-weight:400}
+.field input{width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--border-strong);
+  background:var(--raised);color:var(--ink);font-size:13px;font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.field input::placeholder{color:var(--ink-mute)}
+.field small{display:block;margin-top:5px;color:var(--ink-mute);font-size:10px;line-height:1.4}
+.wizard-err{font-size:11.5px;color:var(--crit);background:color-mix(in srgb,var(--crit) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--crit) 30%,transparent);border-radius:8px;padding:8px 10px;margin-bottom:10px}
+.wizard-err[hidden]{display:none}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+.btn{border-radius:9px;padding:8px 15px;font-size:12.5px;font-weight:700;cursor:pointer;border:1px solid var(--border-strong);
+  background:var(--surface-2);color:var(--ink-dim)}
+.btn.ghost:hover{color:var(--ink)}
+.btn.primary{background:var(--glimmer);color:var(--ground);border-color:var(--glimmer)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.55;cursor:default}
+
+.steplist{display:grid;gap:7px;margin:14px 0}
+.step{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;background:var(--surface-2);
+  border:1px solid var(--border);font-size:12px}
+.step .si{width:18px;height:18px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;
+  border:2px solid var(--border-strong);font-size:10px;font-weight:800;color:transparent}
+.step .sn{flex:1 1 auto;min-width:0}
+.step .sn b{display:block;font-weight:700;color:var(--ink)}
+.step .sn small{display:block;color:var(--ink-dim);font-size:10.5px;margin-top:1px;overflow-wrap:anywhere}
+.step.start .si{border-color:var(--glimmer);border-top-color:transparent;animation:spin .8s linear infinite}
+.step.ok .si{border-color:var(--good);background:var(--good);color:var(--ground)}
+.step.ok .si::after{content:"\2713"}
+.step.fail .si{border-color:var(--crit);background:var(--crit);color:var(--ground)}
+.step.fail .si::after{content:"\2715"}
+.step.fail .sn small{color:var(--crit)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.raw-log{margin-top:2px}
+.raw-log summary{cursor:pointer;font-size:11px;color:var(--ink-mute);letter-spacing:.05em}
+.raw-log pre{margin:8px 0 0;max-height:180px;overflow:auto;font-size:10.5px;line-height:1.5;
+  color:var(--ink-dim);background:var(--grain);border:1px solid var(--border);border-radius:9px;padding:9px 11px;
+  white-space:pre-wrap;overflow-wrap:anywhere}
+.result-card{margin-top:12px;padding:12px 13px;border-radius:11px;font-size:12px;line-height:1.5}
+.result-card.success{background:color-mix(in srgb,var(--good) 14%,transparent);border:1px solid color-mix(in srgb,var(--good) 34%,transparent);color:var(--ink)}
+.result-card.fail{background:color-mix(in srgb,var(--crit) 12%,transparent);border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);color:var(--ink)}
+.result-card b{display:block;margin-bottom:4px}
+.result-card .copy-log-btn{margin-top:8px}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+  .dot{animation:none}
+}
+
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 64 64"><path d="M20 46 L38 16 L38 46 Z" fill="var(--glimmer)"/><path d="M38 16 L46 30 L38 46 Z" fill="var(--gold)"/></svg>
+    </div>
+    <div class="wordmark">
+      <b>MUSER</b>
+      <small id="wordmarkSub">serving <b>Muse Glimmer-30B</b> · live process telemetry</small>
+    </div>
+  </div>
+  <div class="hspace"></div>
+  <div class="hgroup">
+    <div class="badge" id="modeBadge" title="Connecting to the server…">
+      <span class="dot"></span> <span id="modeBadgeText">Live Telemetry — connecting…</span>
+    </div>
+    <div class="stat-inline"><span>Uptime</span><b class="mono" id="uptime">—</b></div>
+    <div class="stat-inline"><span>Viewers</span><b class="mono" id="viewers">—</b></div>
+    <button class="btn ghost" id="loginBtn" type="button" title="Authenticate dashboard telemetry">Sign in</button>
+    <button class="tbtn" id="reconnectBtn" title="Reconnect to live telemetry" aria-label="Reconnect">↻</button>
+    <button class="tbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle color theme">◑</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel span12">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Cluster</div>
+        <h2 class="ptitle">Topology — this process</h2>
+      </div>
+      <div class="phint-row">
+        <span class="phint"><span id="topoHint">Mac decodes locally · a prefill node joins once its first transfer completes</span> <span class="tag" id="honNodes" style="display:none"></span></span>
+        <button class="addnode-btn" id="addNodeBtn" type="button">+ Add node</button>
+      </div>
+    </div>
+    <div class="nodes two" id="nodes"></div>
+    <div class="regnodes" id="regNodes"></div>
+  </section>
+
+  <section class="panel span12" id="chatPanel">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Live chat</div>
+        <h2 class="ptitle">Talk to the model — tokens as they decode</h2>
+      </div>
+      <div class="phint-row">
+        <span class="phint">same-origin <span class="mono">POST /v1/chat/completions</span> · one SSE chunk per sampled token</span>
+        <button class="btn ghost" id="chatClear" type="button">Clear</button>
+      </div>
+    </div>
+    <div class="chatwrap">
+      <div class="chatlog" id="chatLog">
+        <div class="empty" id="chatEmpty">No messages yet — ask something and watch the first token land.</div>
+      </div>
+      <div class="chatmeta mono" id="chatMeta"></div>
+      <div class="chatkeyrow" id="chatKeyRow" hidden>
+        <input id="chatKeyInput" type="password" placeholder="server API key — required for inference on non-loopback serves" autocomplete="off" spellcheck="false" />
+        <button class="btn ghost" id="chatKeyUse" type="button">Use key</button>
+      </div>
+      <div class="kvnote" id="chatKeyNote" hidden>Loopback serving is keyless. On a LAN serve the key stays in page memory only — it is never placed in a URL, storage, or a log.</div>
+      <div class="chatrow">
+        <textarea id="chatInput" rows="1" placeholder="Ask Muse Glimmer anything — Enter sends, Shift+Enter adds a newline" autocomplete="off"></textarea>
+        <button class="btn primary" id="chatSend" type="button">Send</button>
+        <button class="btn ghost" id="chatStop" type="button" hidden>Stop</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel span7">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Disaggregation</div>
+        <h2 class="ptitle">Disaggregation pipeline</h2>
+      </div>
+      <div class="phint">Drawn from completed transfers and healthy nodes <span class="tag" id="honTransfers" style="display:none"></span></div>
+    </div>
+    <div class="canvas-wrap"><canvas id="pipe" aria-label="Prefill-to-decode pipeline"></canvas></div>
+    <div class="pipelegend">
+      <span><i class="swatch" style="background:var(--cat-violet)"></i> global-layer KV</span>
+      <span><i class="swatch" style="background:var(--cat-teal)"></i> windowed-layer KV</span>
+      <span><i class="swatch" style="background:var(--gold)"></i> live session</span>
+    </div>
+    <div class="schedule">
+      <div class="tracklbl">Last transfer · <span id="schedSess" class="mono">—</span> · overlapped <span id="schedHidden" class="mono">—</span> · <span id="schedGbps" class="mono">—</span> · control <span id="schedControl" class="mono">—</span> · accept <span id="schedAccept" class="mono">—</span> <span class="tag t-mock" id="schedIllus" style="display:none">illustrative proportions</span></div>
+      <div class="track" id="schedTrack">
+        <div class="seg" id="segNope" style="left:0;width:0;background:var(--cat-violet)">global</div>
+        <div class="seg" id="segSwa" style="left:0;width:0;background:var(--cat-teal)">windowed</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel span5">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Cache savings</div>
+        <h2 class="ptitle">Cache savings</h2>
+      </div>
+      <div class="phint">live counters — populate on first reuse or transfer <span class="tag" id="honEcon" style="display:none"></span></div>
+    </div>
+    <div class="econ-vs">
+      <div class="econ-big cache"><div class="v num" id="ecCache">0.0</div><div class="u">GB from cache</div></div>
+      <div class="arrow">served<br>vs<br>recomputed</div>
+      <div class="econ-big recomp"><div class="v num" id="ecRecomp">0.0</div><div class="u">GB recomputed</div></div>
+    </div>
+    <div class="derived">
+      <div class="dcard"><div class="dv num" id="dSec">0s</div><div class="dl">wall time saved</div><div class="ds">vs full prefill</div></div>
+      <div class="dcard"><div class="dv num" id="dFlop">0</div><div class="dl">FLOPs avoided</div><div class="ds">compute skipped</div></div>
+      <div class="dcard"><div class="dv num" id="dEnergy">—</div><div class="dl">energy saved</div><div class="ds">no power meter on this process</div></div>
+    </div>
+    <div class="hitmeter">
+      <div class="hitrow"><span class="eyebrow">Hit rate · restore speedup</span>
+        <span><b class="num" id="ecHit">0%</b> &nbsp;·&nbsp; <b class="num" id="ecSpeed" style="color:var(--gold-bright)">—</b></span></div>
+      <div class="tierbar" id="tierbar">
+        <i style="width:0;background:var(--cat-teal)" id="tR">resident</i>
+        <i style="width:0;background:var(--cat-violet)" id="tS">ssd</i>
+        <i style="width:0;background:var(--gold)" id="tD">remote</i>
+      </div>
+      <div class="tierlegend">
+        <span><i class="swatch" style="background:var(--cat-teal)"></i> resident</span>
+        <span><i class="swatch" style="background:var(--cat-violet)"></i> ssd</span>
+        <span><i class="swatch" style="background:var(--gold)"></i> remote</span>
+      </div>
+    </div>
+    <div class="hitmeter">
+      <div class="hitrow"><span class="eyebrow">Reuse beyond cache hits</span></div>
+      <div class="tierlegend" style="margin-top:0">
+        <span>continued sessions <b class="num mono" id="ecCont">0</b></span>
+        <span>remote prefills <b class="num mono" id="ecDisaggP">0</b></span>
+        <span>remote KV installed <b class="num mono" id="ecDisaggB">0 B</b></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel span4">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">KV cache</div>
+        <h2 class="ptitle">Two layer classes</h2>
+      </div>
+      <div class="phint"><span class="tag" id="honKv" style="display:none"></span></div>
+    </div>
+    <div class="kv-split">
+      <div class="kvrow">
+        <div class="kvhead"><b>13 global layers · grow with context</b><span class="sub num" id="kvNopeB">0 B</span></div>
+        <div class="kvbar"><i id="kvNope" style="width:0;background:linear-gradient(90deg,var(--cat-violet),color-mix(in srgb,var(--cat-violet) 55%,var(--surface)))"></i></div>
+        <div class="kvnote">No positional rotation — every token stays visible. Sized from live session token counts.</div>
+      </div>
+      <div class="kvrow">
+        <div class="kvhead"><b>39 sliding-window layers · last 2048 tokens</b><span class="sub num" id="kvSwaB">0 B</span></div>
+        <div class="kvbar"><i id="kvSwa" style="width:0;background:linear-gradient(90deg,var(--cat-teal),color-mix(in srgb,var(--cat-teal) 55%,var(--surface)))"></i><div class="cap" id="kvCap" style="left:100%"></div></div>
+        <div class="kvnote">Ring buffer over the newest 2048 tokens — flat beyond the window.</div>
+      </div>
+      <div>
+        <div class="kvhead"><b class="eyebrow">Per-session footprint</b><span class="sub num" id="kvTotal">0 tok · 0 B</span></div>
+        <div class="persess" id="persess"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel span4">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Speculative decoding</div>
+        <h2 class="ptitle">Draft / verify counters</h2>
+      </div>
+      <div class="phint">live acceptance from this process · speed claims appear only when sealed <span class="tag" id="honSpecdec" style="display:none"></span></div>
+    </div>
+    <div class="tricks" id="tricks"></div>
+  </section>
+
+  <section class="panel span4">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Network &amp; serving</div>
+        <h2 class="ptitle">Serving &amp; transfers</h2>
+      </div>
+      <div class="phint"><span class="tag" id="honWire" style="display:none"></span></div>
+    </div>
+    <div class="wiregrid">
+      <div class="gauge"><div class="gl">KV in · transfers</div><div class="gv num"><span id="wIn">—</span> <small>Gb/s</small></div><canvas class="spark" id="spIn"></canvas></div>
+      <div class="gauge"><div class="gl">KV out · transfers</div><div class="gv num"><span id="wOut">—</span> <small>Gb/s</small></div><canvas class="spark" id="spOut"></canvas></div>
+    </div>
+    <div class="wiregrid" style="margin-top:14px">
+      <div class="gauge"><div class="gl">Requests / s</div><div class="gv num" id="wRps">—</div></div>
+      <div class="gauge"><div class="gl">Active sessions</div><div class="gv num" id="wCli">—</div></div>
+    </div>
+    <div class="wiregrid" style="margin-top:14px">
+      <div class="gauge"><div class="gl">Decode tok/s</div><div class="gv num" id="wDecTok">—</div></div>
+      <div class="gauge"><div class="gl">Queue depth</div><div class="gv num" id="wQueue">—</div></div>
+    </div>
+    <div class="histo">
+      <div>
+        <div class="tracklbl">TTFT (ms)</div>
+        <div class="pctrow"><span class="k">p50</span><span class="v" id="ttft50">—</span></div>
+        <div class="pctrow"><span class="k">p95</span><span class="v" id="ttft95">—</span></div>
+      </div>
+      <div>
+        <div class="tracklbl">ITL (ms)</div>
+        <div class="pctrow"><span class="k">p50</span><span class="v" id="itl50">—</span></div>
+        <div class="pctrow"><span class="k">p95</span><span class="v" id="itl95">—</span></div>
+      </div>
+    </div>
+    <div class="kvnote" id="remoteHealth">remote prefill: <span id="rhFailures">—</span> failures · <span id="rhFallbacks">—</span> fallbacks<span id="rhErrorWrap"></span></div>
+  </section>
+
+  <section class="panel span7">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Sessions</div>
+        <h2 class="ptitle">Active sessions</h2>
+      </div>
+      <div class="phint"><span id="sessCount">0 live</span> <span class="tag" id="honSessions" style="display:none"></span></div>
+    </div>
+    <div class="scroll-x">
+      <table>
+        <thead><tr><th>Session</th><th>Origin</th><th>Node</th><th>Tokens</th><th>Age</th></tr></thead>
+        <tbody id="sessRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel span5">
+    <div class="phead">
+      <div>
+        <div class="eyebrow">Activity</div>
+        <h2 class="ptitle">Session events</h2>
+      </div>
+    </div>
+    <div class="diffbanner"><span class="dot" style="background:var(--gold-bright);animation:none"></span>
+      <span>Events are from this process. Speed claims wait on sealed qualification packets, not this panel.</span></div>
+    <div class="evlog" id="evlog"></div>
+  </section>
+</main>
+
+<footer>
+  <span class="leg"><span class="tag t-meas">measured</span> live counter on this process</span>
+  <span class="leg"><span class="tag t-tgt">expected</span> design target, not yet measured</span>
+  <span class="leg"><span class="tag t-mock">not measured</span> no measurement exists in this build</span>
+  <span class="hspace" style="flex:1"></span>
+  <span>MUSER · a third-party engine for Muse Glimmer. Not affiliated with or endorsed by the model's authors.</span>
+</footer>
+
+<div class="modal-backdrop" id="authBackdrop" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal-head">
+      <h3 id="authTitle">Sign in to Muser</h3>
+      <button class="modal-x" id="authClose" type="button" aria-label="Close">✕</button>
+    </div>
+    <p class="modal-lede">Enter the API key configured for this server to unlock live telemetry and management.</p>
+    <div class="field"><label for="authApiKey">API key</label>
+      <input id="authApiKey" type="password" placeholder="server API key" autocomplete="current-password" spellcheck="false" />
+      <small>HTTPS exchanges the key for a Secure, HttpOnly session. Loopback HTTP keeps it in this page only.</small></div>
+    <div class="wizard-err" id="authErr" hidden></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="authCancel" type="button">Cancel</button>
+      <button class="btn primary" id="authSubmit" type="button">Connect</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="wizardBackdrop" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wizardTitle">
+    <div class="modal-head">
+      <h3 id="wizardTitle">Add node</h3>
+      <button class="modal-x" id="wizardClose" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div id="wizardForm">
+      <p class="modal-lede">Runs the full add-node pipeline over SSH against one remote host: preflight, runtime deploy, model fetch, keys/certs, daemon start, and a verified smoke handoff.</p>
+      <div class="field"><label for="wzHost">Host</label>
+        <input id="wzHost" type="text" placeholder="192.0.2.50 or node-name" autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="wzUser">User</label>
+        <input id="wzUser" type="text" placeholder="ubuntu" autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="wzName">Name <span class="optional">optional</span></label>
+        <input id="wzName" type="text" placeholder="derived from host" autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="wzKey">Key path <span class="optional">optional</span></label>
+        <input id="wzKey" type="text" placeholder="ssh-agent (recommended)" autocomplete="off" spellcheck="false" /></div>
+      <div class="field"><label for="wzApiKey">Dashboard API key</label>
+        <input id="wzApiKey" type="password" placeholder="required for node management" autocomplete="off" spellcheck="false" />
+        <small>On HTTPS it is exchanged for a Secure session plus CSRF token; on loopback HTTP it remains page-memory-only bearer material. Never placed in a URL or progress log.</small></div>
+      <div class="wizard-err" id="wizardErr" hidden></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="wizardCancel" type="button">Cancel</button>
+        <button class="btn primary" id="wizardSubmit" type="button">Add node</button>
+      </div>
+    </div>
+
+    <div id="wizardProgress" hidden>
+      <div class="steplist" id="stepList"></div>
+      <details class="raw-log"><summary>Raw log</summary><pre class="mono" id="rawLog"></pre></details>
+      <div id="wizardResult"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="wizardDone" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* Live-only Muser dashboard. Renders GET /snapshot and GET /telemetry
+   MetricsSnapshot JSON. Mock/empty fields stay unavailable. No simulator. */
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const GB = 1e9, MiB = 1048576;
+const $ = s => document.querySelector(s);
+const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+const ESC_MAP = {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g, c=>ESC_MAP[c]);
+
+const fmtGB = b => (b/GB).toFixed(b<10*GB?2:1);
+const fmtBytes = b => {
+  b = Number(b)||0;
+  if(b>=GB) return (b/GB).toFixed(1)+" GB";
+  if(b>=MiB) return (b/MiB).toFixed(0)+" MiB";
+  if(b>=1024) return (b/1024).toFixed(0)+" KB";
+  return Math.round(b)+" B";
+};
+const fmtInt = n => Math.round(n).toLocaleString("en-US");
+const fmtDur = s => { s=Math.round(s); if(s<60) return s+"s"; if(s<3600) return Math.floor(s/60)+"m "+(s%60)+"s"; return Math.floor(s/3600)+"h "+Math.floor((s%3600)/60)+"m"; };
+const fmtFlop = g => { const p=g/1e6; return p>=1000? (p/1000).toFixed(1)+" EFLOP" : p>=1? p.toFixed(1)+" PFLOP" : (g/1e3).toFixed(0)+" TFLOP"; };
+const kfmt = n => n>=1000? (n/1000).toFixed(n<10000?1:0)+"k" : Math.round(n).toString();
+function fmtClock(s){
+  s=Math.max(0,Math.floor(Number(s)||0));
+  return [s/3600,(s%3600)/60,s%60].map(v=>String(Math.floor(v)).padStart(2,"0")).join(":");
+}
+function honestyOf(snap, path){
+  let cur = snap && snap._honesty;
+  if(!cur) return null;
+  for(const key of path.split(".")){
+    if(cur==null || typeof cur!=="object") return typeof cur==="string"? cur : null;
+    cur = cur[key];
+  }
+  if(typeof cur==="string") return cur;
+  if(cur && typeof cur==="object"){
+    // Uniform sections earn one chip; mixed sections show none - a rollup
+    // that stamps "not measured" over measured numbers is a lie.
+    const vals=Object.values(cur).map(v=>typeof v==="string"?v:null).filter(Boolean);
+    if(!vals.length) return null;
+    return vals.every(v=>v===vals[0]) ? vals[0] : null;
+  }
+  return null;
+}
+function isMock(snap, path){ return honestyOf(snap, path)==="mock"; }
+function hiddenFraction(tr){
+  const v = Number(tr && tr.hidden_pct);
+  if(!Number.isFinite(v)) return null;
+  return v>1 ? v/100 : v;
+}
+
+const HON_IDS = {
+  nodes:"honNodes", transfers:"honTransfers", economics:"honEcon", kv:"honKv",
+  wire:"honWire", sessions:"honSessions", specdec:"honSpecdec"
+};
+function renderHonesty(snap){
+  for(const key in HON_IDS){
+    const el = document.getElementById(HON_IDS[key]);
+    if(!el) continue;
+    const tag = honestyOf(snap, key);
+    if(!tag){ el.style.display="none"; continue; }
+    el.style.display="inline-block";
+    // Wire values are the honesty enum; the surface speaks product language.
+    el.textContent = tag==="target" ? "expected" : tag==="mock" ? "not measured" : tag;
+    el.className = "tag " + (tag==="measured"?"t-meas":tag==="target"?"t-tgt":"t-mock");
+  }
+}
+
+function nodeKindLabel(n){
+  if(n.kind==="m3ultra") return "Apple Silicon · Metal decode";
+  if(n.kind==="gx10" || n.kind==="gb10") return "NVIDIA GX10 · CUDA prefill";
+  return esc(n.kind || "node");
+}
+function gpuLive(snap){ return honestyOf(snap,"nodes")==="measured"; }
+
+function renderNodes(snap){
+  const host=$("#nodes");
+  const nodes = snap.nodes || [];
+  if(!nodes.length){
+    host.className = "nodes";
+    host.innerHTML = '<div class="empty">No node telemetry yet — GPU stats appear when a node reports them</div>';
+    return;
+  }
+  const gpu = gpuLive(snap);
+  host.className = "nodes " + (nodes.length<=2 ? "two" : "");
+  host.innerHTML = "";
+  nodes.forEach(n=>{
+    const el=document.createElement("div");
+    el.className="node "+n.role+(n.state==="prefilling"||n.state==="decoding"?" on":"");
+    const showGpu = gpu && n.tok_s!=null;
+    const tok = showGpu ? Number(n.tok_s).toFixed(1) : "—";
+    const util = showGpu && n.util!=null ? (n.util*100).toFixed(0)+"%" : "—";
+    const utilW = showGpu && n.util!=null ? clamp(n.util*100,0,100).toFixed(0)+"%" : "0%";
+    let mem = "—";
+    let memW = "0%";
+    if(showGpu && n.mem_used!=null && n.mem_total){
+      mem = fmtGB(n.mem_used)+"/"+(n.mem_total/GB).toFixed(0)+"G";
+      memW = clamp(n.mem_used/n.mem_total*100,0,100).toFixed(0)+"%";
+    }
+    const pwr = showGpu && n.power_w!=null ? n.power_w.toFixed(0)+" W" : "—";
+    const temp = showGpu && n.temp_c!=null ? n.temp_c.toFixed(0)+"°" : "—";
+    el.innerHTML=`<div class="role">${esc(n.role)}</div>
+      <div class="nid"><span class="led ${esc(n.state||"idle")}"></span><span>${esc(n.id)}</span></div>
+      <div class="kind">${nodeKindLabel(n)}</div>
+      <div class="big num">${tok}</div><div class="biglbl">${showGpu?"tok / s":"GPU telemetry unavailable"}</div>
+      <div class="metrows">
+        <div class="metrow"><span class="k">util</span><div class="bar"><i style="width:${utilW};background:${n.role==="decode"?"var(--cat-teal)":"var(--cat-violet)"}"></i></div><span class="v">${util}</span></div>
+        <div class="metrow"><span class="k">mem</span><div class="bar"><i style="width:${memW}"></i></div><span class="v">${mem}</span></div>
+        <div class="metrow"><span class="k">pwr</span><span></span><span class="v">${pwr}</span></div>
+        <div class="metrow"><span class="k">temp</span><span></span><span class="v">${temp}</span></div>
+      </div>`;
+    host.appendChild(el);
+  });
+}
+
+function renderEcon(snap){
+  const e=snap.economics || {};
+  const derived=e.derived || {};
+  $("#ecCache").textContent=fmtGB(e.bytes_served_from_cache||0);
+  $("#ecRecomp").textContent=fmtGB(e.bytes_recomputed||0);
+  const secTag=honestyOf(snap,"economics.derived.seconds_saved"), flopTag=honestyOf(snap,"economics.derived.gflops_avoided");
+  $("#dSec").textContent = secTag==="mock" ? "—" : fmtDur(derived.seconds_saved||0);
+  $("#dFlop").textContent = flopTag==="mock" ? "—" : fmtFlop(derived.gflops_avoided||0);
+  if(isMock(snap,"economics.derived.joules_saved")) {
+    $("#dEnergy").textContent="—";
+  } else {
+    const j=derived.joules_saved||0;
+    const wh=j/3600;
+    $("#dEnergy").textContent = wh>=1000? (wh/1000).toFixed(1)+" kWh" : wh>=1? wh.toFixed(0)+" Wh" : j.toFixed(0)+" J";
+  }
+  const hits=e.cache_hits||0, misses=e.cache_misses||0, denom=hits+misses;
+  $("#ecHit").textContent=((e.hit_rate!=null? e.hit_rate : (denom?hits/denom:0))*100).toFixed(0)+"%";
+  if(isMock(snap,"economics.restore_speedup") || !(e.restore_speedup>0)) $("#ecSpeed").textContent="—";
+  else $("#ecSpeed").textContent=Number(e.restore_speedup).toFixed(1)+"×";
+  const tiers=(e.tiers||{});
+  const r=(tiers.resident&&tiers.resident.hits)||0;
+  const s=(tiers.ssd&&tiers.ssd.hits)||0;
+  const d=(tiers.remote&&tiers.remote.hits)||0;
+  const th=r+s+d||1;
+  $("#tR").style.width=(r/th*100)+"%";
+  $("#tS").style.width=(s/th*100)+"%";
+  $("#tD").style.width=(d/th*100)+"%";
+  $("#tR").textContent=r>0? "resident":"";
+  $("#tS").textContent=s>0? "ssd":"";
+  $("#tD").textContent=d>0? "remote":"";
+  // Reuse that is real work avoided but never a served cache hit (a live-session
+  // continuation, or a prefill another node computed): kept visibly separate from
+  // cache_hits/hit_rate above so neither inflates the headline hit rate.
+  $("#ecCont").textContent=fmtInt(e.session_continuation_hits||0);
+  $("#ecDisaggP").textContent=fmtInt(e.disagg_prefills||0);
+  $("#ecDisaggB").textContent=fmtBytes(e.disagg_bytes_installed||0);
+}
+
+function renderKV(snap){
+  const k=snap.kv || {structural:{}, per_session:[]};
+  const st=k.structural||{};
+  const maxScale=Math.max(k.total_bytes||0, 1);
+  const kvLive = ((st.nope_growing_bytes||0)+(st.swa_windowed_bytes||0)) > 0;
+  if (kvLive) window.__kvClassLast = { n: st.nope_growing_bytes||0, w: st.swa_windowed_bytes||0 };
+  const kvShow = kvLive ? st : (window.__kvClassLast
+    ? { nope_growing_bytes: window.__kvClassLast.n, swa_windowed_bytes: window.__kvClassLast.w }
+    : st);
+  for (const id of ["kvNope","kvSwa","kvNopeB","kvSwaB"]) $("#"+id).style.opacity = kvLive ? "1" : "0.45";
+  $("#kvNope").style.width=clamp((kvShow.nope_growing_bytes||0)/maxScale*100,0,100)+"%";
+  $("#kvSwa").style.width=clamp((kvShow.swa_windowed_bytes||0)/maxScale*100,0,100)+"%";
+  $("#kvNopeB").textContent=fmtBytes(kvShow.nope_growing_bytes||0);
+  $("#kvSwaB").textContent=fmtBytes(kvShow.swa_windowed_bytes||0);
+  // idle is not dead: an empty live cache holds the last session's footprint
+  // with its age, so per-request session teardown does not read as a blank.
+  const kvNow = (k.tokens_cached||0) > 0;
+  if (kvNow) {
+    window.__kvLast = { tok: k.tokens_cached, bytes: k.total_bytes, at: Date.now() };
+    $("#kvTotal").textContent = fmtInt(k.tokens_cached)+" tok · "+fmtBytes(k.total_bytes||0);
+    $("#kvTotal").classList.remove("idle");
+  } else if (window.__kvLast) {
+    const last = window.__kvLast;
+    $("#kvTotal").textContent = "last session " + fmtInt(last.tok) + " tok · " +
+      fmtBytes(last.bytes||0) + " · cleared " + fmtAgo(new Date(last.at).toISOString());
+    $("#kvTotal").classList.add("idle");
+  } else {
+    $("#kvTotal").textContent = "0 tok · 0 B";
+  }
+  const host=$("#persess"); host.innerHTML="";
+  const cols=["var(--cat-violet)","var(--cat-teal)","var(--glimmer)","var(--gold)","var(--cat-rose)"];
+  const per=k.per_session||[];
+  per.forEach((p,i)=>{
+    const el=document.createElement("i");
+    el.style.flex=Math.max(p.bytes||1,1); el.style.background=cols[i%cols.length];
+    el.title=(p.session||"")+" · "+fmtBytes(p.bytes)+" · "+fmtInt(p.tokens||0)+" tok";
+    host.appendChild(el);
+  });
+  if(!per.length) host.innerHTML='<i style="flex:1;background:var(--surface-2)"></i>';
+}
+
+const prettyTrick=n=>({gqa_headpack:"GQA head-packing",retrieval_specdec:"Retrieval spec-decode",
+  disaggregation:"Disaggregation TTFT",ane_concurrency:"Post-release ANE + GPU research",
+  kvpack_restore:"kvpack restore",relocation:"NoPE relocation",dispatch_batching:"Dispatch batching"})[n]||n;
+const trickVal=c=>{
+  if(!c) return "—";
+  if(c.kind==="killed") return "✕";
+  if(c.kind==="flag") return "✓";
+  if(c.kind==="percent") return "+"+((c.value-1)*100).toFixed(1)+"%";
+  if(c.kind==="ratio") return Number(c.value).toFixed(0)+"×";
+  return Number(c.value).toFixed(2)+"×";
+};
+
+function renderTricks(snap){
+  const host=$("#tricks");
+  const sd=snap.specdec||{};
+  const drafted=sd.cumulative_drafted||0;
+  const accepted=sd.cumulative_accepted||0;
+  const acceptPct = drafted? (sd.accept_rate*100).toFixed(0)+"%" : "—";
+  let html = `<div class="trick">
+      <div class="th"><span class="tled ${drafted?" ":"off"}"></span><span class="tn">DFlash</span>
+        <span class="tv">${acceptPct}</span></div>
+      <div class="tl">acceptance from this process's drafted and accepted counters
+        <span class="tag t-meas">measured</span></div>
+      <div class="specstat">
+        <span>run <b id="sdRun">${sd.accepted_run||0}</b></span>
+        <span>draft len <b id="sdDraft">${sd.draft_len==null?"—":sd.draft_len}</b></span>
+        <span>accepted (total) <b>${fmtInt(accepted)}</b></span>
+        <span>drafted (total) <b>${fmtInt(drafted)}</b></span>
+        <span>Experimental ANE route errors <b>${sd.ane_route_failures||0}</b></span>
+        <span>Metal route errors <b>${sd.metal_route_failures||0}</b></span>
+      </div>
+    </div>`;
+  const tricks=snap.tricks||[];
+  if(!tricks.length){
+    html += `<div class="trick"><div class="th"><span class="tled off"></span><span class="tn">Sealed speed claims</span>
+      <span class="tv">none</span></div>
+      <div class="tl">Speed numbers appear here only after the release qualification seals them.</div></div>`;
+  } else {
+    tricks.forEach(tk=>{
+      const c=tk.measured_contribution||{};
+      html += `<div class="trick"><div class="th"><span class="tled ${tk.active?"":"off"}"></span>
+        <span class="tn">${esc(prettyTrick(tk.name))}</span><span class="tv">${esc(trickVal(c))}</span></div>
+        <div class="tl">${esc(c.label||"")} · <span class="${c.measured?"tag t-meas":"tag t-tgt"}">${c.measured?"measured":"target"}</span></div></div>`;
+    });
+  }
+  host.innerHTML=html;
+}
+
+// requests_per_s/ingress_gbps are already server-side rolling windows (10s,
+// telemetry routes excluded) as of this wave -- read directly, no client-side
+// re-windowing. egress_gbps stays mock (no live measurement) until it lands.
+function renderWire(snap){
+  const w=snap.wire||{};
+  $("#wIn").textContent = isMock(snap,"wire.ingress_gbps") ? "—" : Number(w.ingress_gbps||0).toFixed(1);
+  $("#wOut").textContent = isMock(snap,"wire.egress_gbps") ? "—" : Number(w.egress_gbps||0).toFixed(1);
+  $("#wRps").textContent = Number(w.requests_per_s||0).toFixed(1);
+  $("#wCli").textContent = w.connected_clients==null? "—" : String(w.connected_clients);
+  const ttft=w.ttft_ms||{};
+  const itl=w.itl_ms||{};
+  const hasTtft = !isMock(snap,"wire.ttft_ms") && ((ttft.p50||0)+(ttft.p95||0)>0);
+  $("#ttft50").textContent = hasTtft? Number(ttft.p50).toFixed(0)+" ms" : "—";
+  $("#ttft95").textContent = hasTtft? Number(ttft.p95).toFixed(0)+" ms" : "—";
+  $("#itl50").textContent = isMock(snap,"wire.itl_ms") ? "—" : Number(itl.p50||0).toFixed(1)+" ms";
+  $("#itl95").textContent = isMock(snap,"wire.itl_ms") ? "—" : Number(itl.p95||0).toFixed(1)+" ms";
+
+  // _decode/_queue_depth/_remote are always-real process extensions (same
+  // standing as _telemetry_viewers): present and measured whenever this
+  // build serves them, an em-dash only if an older/simulator snapshot omits
+  // the section entirely.
+  const decode = snap._decode;
+  const decTok = $("#wDecTok");
+  const active = decode && decode.active;
+  if (!decode) { decTok.textContent = "—"; }
+  else if (active && active.phase === "prefill") {
+    decTok.textContent = "prefilling · " + (active.elapsed_ms/1000).toFixed(1) + "s";
+    decTok.classList.add("idle");
+  } else if (Number(decode.completion_traffic_tok_s_10s||0) > 0 || (active && active.phase === "decode")) {
+    decTok.textContent = Number(decode.completion_traffic_tok_s_10s||0).toFixed(1);
+    decTok.classList.remove("idle");
+  } else if (decode.last_generation_at) {
+    // Ran before, quiet now: say so instead of decaying to a dead-looking 0.
+    decTok.textContent = "idle · " + fmtAgo(decode.last_generation_at)
+      + (decode.completion_tokens ? " · " + fmtInt(decode.completion_tokens) + " tok served" : "");
+    decTok.classList.add("idle");
+  } else {
+    decTok.textContent = "0.0";
+    decTok.classList.remove("idle");
+  }
+  $("#wQueue").textContent = snap._queue_depth==null ? "—" : fmtInt(snap._queue_depth);
+
+  const remote = snap._remote;
+  $("#rhFailures").textContent = remote ? fmtInt(remote.receive_failures||0) : "—";
+  $("#rhFallbacks").textContent = remote ? fmtInt(remote.fallbacks||0) : "—";
+  const errWrap = $("#rhErrorWrap");
+  errWrap.innerHTML = (remote && remote.last_error) ? ` · last error: <span class="mono">${esc(remote.last_error)}</span>` : "";
+}
+
+function renderSessions(snap){
+  const rows=$("#sessRows");
+  const sessions=snap.sessions||[];
+  $("#sessCount").textContent=sessions.length+" live";
+  rows.innerHTML=sessions.slice().reverse().map(s=>`<tr>
+    <td class="mono">${esc(s.id)}</td>
+    <td><span class="oc ${esc(s.origin)}">${esc(s.origin)}</span></td>
+    <td class="mono">${esc(s.node)}</td>
+    <td class="num">${fmtInt(s.tokens)}</td>
+    <td class="num">${Number(s.age_s||0).toFixed(0)}s</td></tr>`).join("")
+    || '<tr><td colspan="5" style="color:var(--ink-mute)">no active sessions</td></tr>';
+}
+
+function renderEvents(snap){
+  const host=$("#evlog");
+  const events=snap._events||[];
+  if(!events.length){
+    host.innerHTML='<div class="empty">no session events yet</div>';
+    return;
+  }
+  host.innerHTML=events.slice(0,26).map(ev=>{
+    const d=ev.detail||{};
+    const tier=esc(d.tier||"—"), from=esc(d.from_node||"?"), to=esc(d.to_node||"?");
+    let msg="";
+    if(ev.kind==="resumed") msg=`resumed ${kfmt(d.tokens||0)} ctx from ${tier} · saved ${(d.seconds_saved||0).toFixed(1)}s`;
+    else if(ev.kind==="migrated") msg=`migrated ${kfmt(d.tokens||0)} ctx ${from}→${to} · saved ${(d.seconds_saved||0).toFixed(1)}s`;
+    else if(ev.kind==="created") msg=`session start ${kfmt(d.tokens||0)} ctx on ${esc(d.to_node||"")}`;
+    else if(ev.kind==="saved") msg=`kvpack save ${kfmt(d.tokens||0)} ctx${d.tier?" → "+tier:""}`;
+    else if(ev.kind==="evicted") msg=`evicted ${kfmt(d.tokens||0)} ctx`;
+    const ts=esc((ev.ts||"").replace("T"," ").replace(/\.\d+Z$/,"Z"));
+    const kind=esc(ev.kind);
+    return `<div class="ev"><span class="ets">${ts}</span>
+      <span class="oc ${kind}">${kind}</span><span class="emsg">${msg}</span></div>`;
+  }).join("");
+}
+
+function nopeSplitFraction(tr){
+  const n=Number(tr.nope_bytes), s=Number(tr.swa_bytes);
+  if(Number.isFinite(n) && Number.isFinite(s) && (n+s)>0) return n/(n+s);
+  return null;
+}
+function renderSchedule(snap){
+  const transfers=snap.transfers||[];
+  const active=transfers.filter(t=>t.phase && t.phase!=="done").slice(-1)[0] || transfers.slice(-1)[0];
+  const segN=$("#segNope"), segS=$("#segSwa"), illus=$("#schedIllus");
+  if(!active){
+    segN.style.width="0"; segS.style.width="0";
+    const lbl=document.querySelector(".tracklbl");
+    if(lbl) lbl.innerHTML='<span class="sub">no transfers yet from this process</span>';
+    illus.style.display="none";
+    return;
+  }
+  const splitFrac=nopeSplitFraction(active);
+  const nopePct = splitFrac==null ? 70 : splitFrac*100;
+  illus.style.display = splitFrac==null ? "inline-block" : "none";
+  const frac=clamp((active.bytes_sent||0)/Math.max(active.bytes_total||1,1),0,1);
+  if(active.phase==="shipping_swa" || active.phase==="done"){
+    segN.style.left="0"; segN.style.width=nopePct+"%";
+    segS.style.left=nopePct+"%"; segS.style.width=(100-nopePct)+"%";
+  } else {
+    segN.style.left="0"; segN.style.width=(clamp(frac,0,1)*nopePct)+"%";
+    segS.style.left=nopePct+"%"; segS.style.width="0";
+  }
+  $("#schedSess").textContent=active.session || active.src_node || "handoff";
+  const hid=hiddenFraction(active);
+  $("#schedHidden").textContent = hid==null? "—" : (hid*100).toFixed(0)+"%";
+  $("#schedGbps").textContent = (active.throughput_gbps!=null) ? Number(active.throughput_gbps).toFixed(2)+" Gb/s" : "—";
+  const controlNs = active._control_ns, acceptNs = active._accept_ns;
+  $("#schedControl").textContent = controlNs!=null ? (controlNs/1e6).toFixed(1)+" ms" : "—";
+  $("#schedAccept").textContent = acceptNs!=null ? (acceptNs/1e6).toFixed(1)+" ms" : "—";
+}
+
+function renderHeader(snap){
+  $("#uptime").textContent = fmtClock(snap.uptime_s);
+  const viewers = snap._telemetry_viewers;
+  $("#viewers").textContent = viewers==null? "—" : String(viewers);
+  const c=snap.cluster||{};
+  const weights = c.weights_bytes ? fmtBytes(c.weights_bytes) : "weights unknown";
+  const arch = [c.layers_total&& (c.layers_total+" layers"), c.layers_nope&& (c.layers_nope+" global"), c.layers_swa&& (c.layers_swa+" windowed")].filter(Boolean).join(" · ");
+  $("#wordmarkSub").innerHTML = `serving <b>${esc(c.model||"Muse Glimmer-30B")}</b> · ${arch||"Muse geometry"} · ${weights}`;
+  $("#topoHint").textContent =
+    `${c.quant||"Q4"} · ${arch||"52L"} · Mac Metal decode + GX10 prefill receipts`;
+}
+
+const Hist = {in:[], out:[]};
+function pushHist(snap){
+  const w=snap.wire||{};
+  const push=(a,v)=>{ a.push(Number(v)||0); if(a.length>90) a.shift(); };
+  if(!isMock(snap,"wire.ingress_gbps")) push(Hist.in, w.ingress_gbps);
+  if(!isMock(snap,"wire.egress_gbps")) push(Hist.out, w.egress_gbps);
+}
+
+function renderAll(snap){
+  if(!snap || typeof snap!=="object") return;
+  lastSnap = snap;
+  renderHeader(snap);
+  renderNodes(snap); renderEcon(snap); renderKV(snap); renderTricks(snap);
+  renderWire(snap); renderSessions(snap); renderEvents(snap); renderSchedule(snap);
+  renderHonesty(snap);
+  renderRegistryNodes();
+  pushHist(snap);
+  drawSpark(spIn, Hist.in, cssVar("--cat-teal"));
+  drawSpark(spOut, Hist.out, cssVar("--cat-violet"));
+  if(reduceMotion) drawPipe();
+}
+
+function mkCanvas(cv){
+  const dpr=Math.min(2,devicePixelRatio||1);
+  function size(){ const r=cv.getBoundingClientRect(); cv.width=Math.max(1,r.width*dpr); cv.height=Math.max(1,r.height*dpr); }
+  size(); addEventListener("resize", size);
+  return {ctx:cv.getContext("2d"), dpr, cv, size};
+}
+function drawSpark(o, data, color){
+  const {ctx,cv}=o; const W=cv.width,H=cv.height; ctx.clearRect(0,0,W,H);
+  if(data.length<2) return;
+  const max=Math.max(...data,0.001), min=Math.min(...data,0);
+  const pad=4*o.dpr; const span=Math.max(max-min,0.001);
+  const x=i=>pad+i/(data.length-1)*(W-2*pad);
+  const y=v=>H-pad-(v-min)/span*(H-2*pad);
+  ctx.beginPath(); ctx.moveTo(x(0),H);
+  data.forEach((v,i)=>ctx.lineTo(x(i),y(v))); ctx.lineTo(x(data.length-1),H); ctx.closePath();
+  ctx.fillStyle=withA(color,0.22); ctx.fill();
+  ctx.beginPath(); data.forEach((v,i)=> i?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v)));
+  ctx.strokeStyle=color; ctx.lineWidth=1.6*o.dpr; ctx.lineJoin="round"; ctx.stroke();
+  ctx.beginPath(); ctx.arc(x(data.length-1),y(data[data.length-1]),2.4*o.dpr,0,7); ctx.fillStyle=color; ctx.fill();
+}
+const _colCache=new Map();
+function withA(c,a){
+  const key=c+"|"+a; const hit=_colCache.get(key); if(hit) return hit;
+  const el=document.createElement("span"); el.style.color=c; document.body.appendChild(el);
+  const rgb=getComputedStyle(el).color; el.remove();
+  const m=rgb.match(/[\d.]+/g); const out=m? `rgba(${m[0]},${m[1]},${m[2]},${a})` : c;
+  _colCache.set(key,out); return out;
+}
+
+const pipe=$("#pipe");
+const pctx=pipe.getContext("2d");
+let pdpr=Math.min(2,devicePixelRatio||1);
+function sizePipe(){ const r=pipe.getBoundingClientRect(); pipe.width=Math.max(1,r.width*pdpr); pipe.height=Math.max(1,r.height*pdpr); }
+sizePipe(); addEventListener("resize", sizePipe);
+function themeKey(){ const a=document.documentElement.getAttribute("data-theme");
+  return a || (matchMedia("(prefers-color-scheme: dark)").matches ? "auto-dark" : "auto-light"); }
+const _cssVarCache = new Map();
+function cssVar(n){
+  const key=themeKey()+"|"+n;
+  let v=_cssVarCache.get(key);
+  if(v===undefined){ v=getComputedStyle(document.documentElement).getPropertyValue(n).trim(); _cssVarCache.set(key,v); }
+  return v;
+}
+function rrect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+let animClock=0, lastT=0, lastSnap=null;
+function decodeNodeLabel(snap){
+  const sess=(snap && snap.sessions) || [];
+  const node = sess.length && sess[0].node;
+  if(!node) return {id:"decode", kind:"idle · no session"};
+  const low=String(node).toLowerCase();
+  const kind = low.includes("metal") ? "Metal decode" : low.includes("cpu") ? "CPU decode" : "decode";
+  return {id:String(node), kind};
+}
+function drawPipe(ts){
+  const now = typeof ts==="number" ? ts : (lastT || (self.performance? performance.now() : Date.now()));
+  const dt=lastT?Math.min(0.05,(now-lastT)/1000):0; lastT=now;
+  if(!reduceMotion) animClock += dt;
+  const W=pipe.width,H=pipe.height,dpr=pdpr;
+  pctx.clearRect(0,0,W,H);
+  const ink=cssVar("--ink"), dim=cssVar("--ink-mute"), teal=cssVar("--cat-teal"),
+        violet=cssVar("--cat-violet"), gold=cssVar("--gold"), glim=cssVar("--glimmer"),
+        surf=cssVar("--raised"), bord=cssVar("--border-strong");
+  const snap=lastSnap;
+  const mx=18*dpr;
+  const srcX=mx, srcW=64*dpr;
+  const gW=150*dpr, gH=H*0.42, gX=W*0.28, gY=(H-gH)/2;
+  const macW=150*dpr, macH=H*0.5, macX=W-mx-macW, macY=(H-macH)/2;
+  const gy=gY+gH/2;
+  const transfers=(snap && snap.transfers) || [];
+  const healthyRegNode = registryNodes.find(n=>n.state==="healthy");
+  const hasReceipt = transfers.length>0 || !!healthyRegNode;
+  const inFlight=transfers.filter(t=>t.phase && t.phase!=="done");
+  const liveXfer=inFlight.length>0;
+  const decoding = snap && (snap.sessions||[]).length>0;
+
+  if(hasReceipt){
+    pctx.lineWidth=1*dpr;
+    pctx.strokeStyle= liveXfer? withA(glim,0.5): withA(dim,0.18);
+    pctx.beginPath(); pctx.moveTo(gX+gW, gy); pctx.bezierCurveTo(W*0.58, gy, W*0.62, macY+macH/2, macX, macY+macH/2); pctx.stroke();
+  }
+
+  if(snap){
+    for(const tr of inFlight){
+      const swa = tr.phase==="shipping_swa";
+      const path=(f)=>{
+        const p0={x:gX+gW,y:gy}, p3={x:macX,y:macY+macH/2}, p1={x:W*0.58,y:gy}, p2={x:W*0.62,y:macY+macH/2};
+        const u=1-f; return {
+          x:u*u*u*p0.x+3*u*u*f*p1.x+3*u*f*f*p2.x+f*f*f*p3.x,
+          y:u*u*u*p0.y+3*u*u*f*p1.y+3*u*f*f*p2.y+f*f*f*p3.y};
+      };
+      const n = swa? 10 : 5;
+      const speed = swa? 0.55 : 0.18;
+      for(let k=0;k<n;k++){
+        const f=((animClock*speed + k/n) % 1);
+        const p=path(f);
+        pctx.beginPath();
+        if(swa){ pctx.fillStyle=withA(teal,0.9); rrect(pctx,p.x-4*dpr,p.y-4*dpr,8*dpr,8*dpr,2*dpr); pctx.fill(); }
+        else { pctx.fillStyle=withA(violet,0.9); pctx.arc(p.x,p.y,2.6*dpr,0,7); pctx.fill(); }
+      }
+    }
+    if(decoding){ for(let k=0;k<6;k++){ const f=((animClock*0.5 + k/6)%1);
+      const x=macX+macW + f*(W-(macX+macW)-mx); const y=macY+macH/2 + Math.sin(f*6+k)*6*dpr;
+      pctx.beginPath(); pctx.fillStyle=withA(gold, 1-f*0.7); pctx.arc(x,y,2.4*dpr,0,7); pctx.fill(); } }
+  }
+
+  pctx.fillStyle=surf; pctx.strokeStyle=bord;
+  rrect(pctx,srcX,H/2-30*dpr,srcW,60*dpr,9*dpr); pctx.fill(); pctx.stroke();
+  label(pctx,"PROMPTS",srcX+srcW/2,H/2-40*dpr,dim,9*dpr,dpr,"center");
+  glyph(pctx,srcX+srcW/2,H/2,glim,dpr);
+
+  if(hasReceipt){
+    pctx.fillStyle=surf; pctx.strokeStyle=withA(violet,0.8); pctx.lineWidth=1.6*dpr;
+    rrect(pctx,gX,gY,gW,gH,10*dpr); pctx.fill(); pctx.stroke();
+    const last = transfers.slice(-1)[0];
+    const gxName = (last && last.src_node) || (healthyRegNode && healthyRegNode.name) || "gx10-prefill";
+    label(pctx, gxName, gX+gW/2, gY+22*dpr, ink, 13*dpr, dpr, "center", "700");
+    label(pctx, "CUDA prefill", gX+gW/2, gY+40*dpr, dim, 8.5*dpr, dpr, "center");
+    if(last){
+      label(pctx, fmtBytes(last.bytes_total||last.bytes_sent||0),
+        gX+gW/2, gY+gH-16*dpr, violet, 12*dpr, dpr, "center", "700");
+    } else {
+      label(pctx, "healthy", gX+gW/2, gY+gH-16*dpr, teal, 12*dpr, dpr, "center", "700");
+    }
+    label(pctx,"GX10 · PREFILL", gX+gW/2, 12*dpr, dim, 9*dpr, dpr,"center");
+  }
+
+  pctx.fillStyle=surf; pctx.strokeStyle= decoding? withA(teal,0.85):bord; pctx.lineWidth=(decoding?1.8:1)*dpr;
+  rrect(pctx,macX,macY,macW,macH,12*dpr); pctx.fill(); pctx.stroke();
+  const dLabel = decodeNodeLabel(snap);
+  label(pctx,dLabel.id, macX+macW/2, macY+22*dpr, ink, 13*dpr, dpr,"center","800");
+  label(pctx,dLabel.kind, macX+macW/2, macY+40*dpr, dim, 8.5*dpr, dpr,"center");
+  const sessN = snap && (snap.sessions||[]).length || 0;
+  label(pctx, sessN? sessN+" live session"+(sessN===1?"":"s"):"idle", macX+macW/2, macY+macH/2+6*dpr, decoding?teal:dim, 16*dpr, dpr,"center","800");
+  label(pctx,"DECODE", macX+macW/2, macY+macH-16*dpr, dim, 9*dpr, dpr,"center");
+  label(pctx,"TOKENS →", macX-10*dpr, H/2-38*dpr, gold, 9*dpr, dpr,"right");
+
+  // reduced-motion: renderAll() draws once per snapshot instead of self-scheduling.
+  // idle (nothing in flight, nothing decoding): drop to ~1fps rather than chase vsync.
+  if(reduceMotion) return;
+  if(liveXfer || decoding) requestAnimationFrame(drawPipe);
+  else setTimeout(()=>requestAnimationFrame(drawPipe), 1000);
+}
+function label(ctx,txt,x,y,color,size,dpr,align,weight){
+  ctx.fillStyle=color; ctx.textAlign=align||"left"; ctx.textBaseline="middle";
+  ctx.font=`${weight||"500"} ${size}px ui-monospace,"SF Mono",Menlo,monospace`;
+  if(size>=13) ctx.font=`${weight||"700"} ${size}px system-ui,-apple-system,sans-serif`;
+  ctx.fillText(txt,x,y);
+}
+function glyph(ctx,x,y,c,dpr){ ctx.fillStyle=c; ctx.beginPath(); ctx.arc(x,y,4*dpr,0,7); ctx.fill(); }
+
+const spIn=mkCanvas($("#spIn")), spOut=mkCanvas($("#spOut"));
+const ENDPOINT = (location.protocol==="http:"||location.protocol==="https:") ? location.origin : "";
+
+const modeBadge=$("#modeBadge"), modeBadgeText=$("#modeBadgeText");
+function setModeBadge(status){
+  modeBadge.classList.remove("live","err");
+  if(status==="error"){
+    modeBadge.classList.add("err");
+    modeBadgeText.textContent="Live Telemetry — disconnected";
+    modeBadge.title="Could not reach "+ENDPOINT+"/snapshot or /telemetry.";
+  } else if(status==="reconnecting"){
+    modeBadge.classList.add("err");
+    modeBadgeText.textContent="Live Telemetry — reconnecting…";
+    modeBadge.title="The server restarted or the stream dropped; the page keeps itself fed and recovers automatically.";
+  } else {
+    modeBadge.classList.add("live");
+    modeBadgeText.textContent = status==="connecting" ? "Live Telemetry — connecting…" : "Live Telemetry";
+    modeBadge.title="Live engine telemetry from "+ENDPOINT+". Tags on panels: measured, expected, not measured.";
+  }
+}
+
+// Staleness watchdog: EventSource stays "open" (no onerror) even when the
+// server stops pushing frames, so the LIVE badge alone can't catch a stall.
+// Track wall-clock time of the last applied frame and flip independently.
+const STALE_MS = 4000;
+let lastFrameWall = 0, lastSeq = null;
+let dashboardBearer = "";
+let dashboardCsrf = "";
+function markFrame(seq){
+  lastFrameWall = Date.now();
+  $("main").classList.remove("stale");
+  if(typeof seq === "number"){
+    if(lastSeq!=null && seq>lastSeq+1) console.warn("muser dashboard: telemetry seq gap", lastSeq, "->", seq);
+    lastSeq = seq;
+  }
+}
+let staleRestarts = 0;
+function checkStale(){
+  if(!lastFrameWall) return;
+  if(Date.now()-lastFrameWall > 15000){
+    // The stream is open but silent, or retries are wedged: rebuild it.
+    lastFrameWall = Date.now();
+    staleRestarts += 1;
+    startLive();
+    return;
+  }
+  const ageMs = Date.now()-lastFrameWall;
+  if(ageMs<=STALE_MS){ $("main").classList.remove("stale"); return; }
+  $("main").classList.add("stale");
+  if(modeBadge.classList.contains("live")){
+    modeBadgeText.textContent = "Live Telemetry — stale · last update " + Math.round(ageMs/1000) + "s ago";
+  }
+}
+setInterval(checkStale, 1000);
+
+let liveSource=null;
+async function fetchSnapshotOnce(){
+  try{
+    const headers = dashboardBearer ? {authorization:"Bearer "+dashboardBearer} : {};
+    const r = await fetch(ENDPOINT+"/snapshot", {cache:"no-store", headers});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    renderAll(await r.json());
+    markFrame();
+    setModeBadge("ok");
+  }catch(err){
+    setModeBadge("error");
+    console.warn("muser dashboard: GET "+ENDPOINT+"/snapshot failed —", err);
+  }
+}
+function connectStream(){
+  if(typeof EventSource==="undefined") return;
+  // EventSource cannot attach the loopback bearer header. HTTPS uses the
+  // dashboard cookie; HTTP bearer sessions stay live through bounded polling.
+  if(dashboardBearer){ startPollFallback(); return; }
+  try{
+    liveSource = new EventSource(ENDPOINT+"/telemetry");
+    liveSource.addEventListener("snapshot", ev=>{
+      try{
+        const frame = JSON.parse(ev.data);
+        renderAll(frame && frame.data ? frame.data : frame);
+        markFrame(frame && typeof frame.seq==="number" ? frame.seq : undefined);
+        stopPollFallback();
+        setModeBadge("ok");
+      }catch(err){ console.error("muser dashboard: bad /telemetry frame —", err); }
+    });
+    liveSource.onerror = () => {
+      // EventSource auto-retries; keep the page fed by polling until the
+      // stream returns (server restarts must dim the page, not disable it).
+      setModeBadge("reconnecting");
+      startPollFallback();
+    };
+  }catch(err){ setModeBadge("reconnecting"); startPollFallback(); }
+}
+let pollTimer = null;
+function startPollFallback(){
+  if(pollTimer) return;
+  pollTimer = setInterval(async ()=>{
+    try{
+      const headers = dashboardBearer ? {authorization:"Bearer "+dashboardBearer} : {};
+      const r = await fetch(ENDPOINT+"/snapshot", {cache:"no-store", headers});
+      if(r.ok){ renderAll(await r.json()); markFrame(); setModeBadge("reconnecting"); }
+    }catch(_e){ /* server still down; keep trying */ }
+  }, 3000);
+}
+function stopPollFallback(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+function startLive(){
+  setModeBadge("connecting");
+  if(liveSource){ liveSource.close(); liveSource=null; }
+  fetchSnapshotOnce();
+  connectStream();
+}
+$("#reconnectBtn").addEventListener("click", startLive);
+
+const authBackdrop=$("#authBackdrop"), authErr=$("#authErr"), authInput=$("#authApiKey");
+function openAuth(){
+  authErr.hidden=true; authErr.textContent=""; authInput.value="";
+  authBackdrop.hidden=false; authInput.focus();
+}
+function closeAuth(){ authBackdrop.hidden=true; authInput.value=""; }
+async function authenticateDashboard(){
+  const apiKey=authInput.value;
+  if(!apiKey){ authErr.textContent="the server API key is required."; authErr.hidden=false; return; }
+  const submit=$("#authSubmit"); submit.disabled=true; authErr.hidden=true;
+  try{
+    if(location.protocol==="https:"){
+      const login=await fetch(ENDPOINT+"/v1/dashboard/login", {
+        method:"POST", headers:{authorization:"Bearer "+apiKey}
+      });
+      if(!login.ok) throw new Error(login.status===401 ? "the API key was rejected" : "login HTTP "+login.status);
+      const session=await login.json();
+      if(!session || typeof session.csrf_token!=="string") throw new Error("login returned no CSRF token");
+      dashboardCsrf=session.csrf_token; dashboardBearer="";
+    } else {
+      dashboardBearer=apiKey; dashboardCsrf="";
+    }
+    $("#loginBtn").textContent="Signed in";
+    closeAuth(); startLive(); pollRegistry();
+  }catch(err){
+    authErr.textContent=err && err.message || String(err); authErr.hidden=false;
+  }finally{ submit.disabled=false; }
+}
+$("#loginBtn").addEventListener("click", openAuth);
+$("#authClose").addEventListener("click", closeAuth);
+$("#authCancel").addEventListener("click", closeAuth);
+$("#authSubmit").addEventListener("click", authenticateDashboard);
+authInput.addEventListener("keydown", event=>{ if(event.key==="Enter") authenticateDashboard(); });
+authBackdrop.addEventListener("click", event=>{ if(event.target===authBackdrop) closeAuth(); });
+startLive();
+if(!reduceMotion) requestAnimationFrame(drawPipe); else drawPipe(0);
+
+const root=document.documentElement, tbtn=$("#themeBtn");
+function currentDark(){ const a=root.getAttribute("data-theme");
+  return a? a==="dark" : matchMedia("(prefers-color-scheme: dark)").matches; }
+function setTheme(){ tbtn.textContent=currentDark()?"◐":"◑"; }
+tbtn.addEventListener("click",()=>{ root.setAttribute("data-theme", currentDark()?"light":"dark"); setTheme();
+  _colCache.clear(); sizePipe(); spIn.size(); spOut.size(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", setTheme);
+setTheme();
+
+/* ============================================================= CHAT */
+/* Streams the served model over same-origin POST /v1/chat/completions.
+   The engine emits one SSE chunk per sampled token, so the live token
+   counter counts chunks, not estimates. Model text only ever reaches the
+   DOM through textContent — never innerHTML. */
+const chatLog=$("#chatLog"), chatInput=$("#chatInput"), chatSend=$("#chatSend"),
+  chatStop=$("#chatStop"), chatMeta=$("#chatMeta"), chatEmpty=$("#chatEmpty"),
+  chatKeyRow=$("#chatKeyRow"), chatKeyInput=$("#chatKeyInput"), chatKeyNote=$("#chatKeyNote");
+let chatHistory=[];
+let chatAbort=null;
+let chatBearer="";
+
+function chatScroll(){ chatLog.scrollTop=chatLog.scrollHeight; }
+function chatMsg(role){
+  if(chatEmpty && chatEmpty.isConnected) chatEmpty.hidden=true;
+  const msg=document.createElement("div");
+  msg.className="chatmsg "+role;
+  const who=document.createElement("span");
+  who.className="who";
+  who.textContent = role==="user" ? "you" : role==="assistant" ? "muse glimmer · this process" : "error";
+  const bubble=document.createElement("div");
+  bubble.className="bubble";
+  msg.appendChild(who); msg.appendChild(bubble);
+  chatLog.appendChild(msg);
+  chatScroll();
+  return {msg, bubble};
+}
+function chatErrMsg(text){
+  chatMsg("error").bubble.textContent=text;
+  chatScroll();
+}
+function chatAssistantMsg(){
+  const {msg,bubble}=chatMsg("assistant");
+  const details=document.createElement("details");
+  details.className="reasoning";
+  details.hidden=true;
+  const summary=document.createElement("summary");
+  const rtext=document.createElement("div");
+  rtext.className="rtext";
+  details.appendChild(summary); details.appendChild(rtext);
+  msg.insertBefore(details,bubble);
+  const text=document.createElement("span");
+  const caret=document.createElement("span");
+  caret.className="caret";
+  bubble.appendChild(text); bubble.appendChild(caret);
+  return {msg, bubble, text, caret, details, summary, rtext};
+}
+function chatSetStreaming(on){
+  chatSend.disabled=on;
+  chatStop.hidden=!on;
+  if(!on) chatInput.focus();
+}
+function chatAutosize(){ chatInput.style.height="auto"; chatInput.style.height=Math.min(chatInput.scrollHeight,150)+"px"; }
+function chatMetaLive(tokens, ttftMs, t0){
+  const genS=Math.max((performance.now()-(t0+ttftMs))/1000,0.001);
+  chatMeta.textContent=tokens+" tok · "+(tokens/genS).toFixed(1)+" tok/s · ttft "+Math.round(ttftMs)+" ms";
+}
+
+async function chatGenerate(){
+  const prompt=chatInput.value.trim();
+  if(!prompt || (chatAbort && !chatAbort.signal.aborted)) return;
+  chatInput.value=""; chatAutosize();
+  chatHistory.push({role:"user", content:prompt});
+  chatMsg("user").bubble.textContent=prompt;
+  const m=chatAssistantMsg();
+  chatAbort=new AbortController();
+  chatSetStreaming(true);
+  chatMeta.textContent="waiting for the first token…";
+  const t0=performance.now();
+  let ttftMs=null, tokens=0, rChars=0, usage=null, finish=null, failed=false, authErr=false;
+  try{
+    const headers={"content-type":"application/json"};
+    const bearer=chatBearer||dashboardBearer;
+    if(bearer) headers.authorization="Bearer "+bearer;
+    const r=await fetch(ENDPOINT+"/v1/chat/completions",{
+      method:"POST", headers, signal:chatAbort.signal,
+      body:JSON.stringify({
+        model:"muse-glimmer-30b",
+        messages:chatHistory.slice(-30),
+        stream:true,
+        stream_options:{include_usage:true},
+        max_tokens:1024
+      })
+    });
+    if(r.status===401){
+      authErr=true;
+      throw new Error("this server requires the API key for inference (loopback serving is keyless)");
+    }
+    if(!r.ok || !r.body){
+      let msg="HTTP "+r.status;
+      try{ const j=await r.json(); const e=j&&j.error; if(e) msg=e.message||String(e); }catch(_e){}
+      throw new Error(msg);
+    }
+    const reader=r.body.getReader(), dec=new TextDecoder();
+    let pending="";
+    for(;;){
+      const chunk=await reader.read();
+      pending+=dec.decode(chunk.value||new Uint8Array(),{stream:!chunk.done});
+      let boundary;
+      while((boundary=pending.indexOf("\n\n"))>=0){
+        const event=pending.slice(0,boundary); pending=pending.slice(boundary+2);
+        const data=event.split("\n").filter(l=>l.startsWith("data:"))
+          .map(l=>l.slice(5).trimStart()).join("\n");
+        if(!data || data==="[DONE]") continue;
+        let j=null;
+        try{ j=JSON.parse(data); }catch(_e){ continue; }
+        if(j && j.usage) usage=j.usage;
+        const ch=j && j.choices && j.choices[0];
+        if(!ch) continue;
+        if(ch.finish_reason) finish=ch.finish_reason;
+        const d=ch.delta||{};
+        if(typeof d.reasoning_content==="string" && d.reasoning_content){
+          rChars+=d.reasoning_content.length;
+          m.details.hidden=false; m.details.open=true;
+          m.summary.textContent="reasoning · live · "+rChars+" chars";
+          m.rtext.textContent+=d.reasoning_content;
+          chatScroll();
+        }
+        if(typeof d.content==="string" && d.content){
+          if(ttftMs==null){
+            ttftMs=performance.now()-t0;
+            m.details.open=false;
+          }
+          tokens+=1;
+          m.text.textContent+=d.content;
+          chatMetaLive(tokens,ttftMs,t0);
+          chatScroll();
+        }
+      }
+      if(chunk.done) break;
+    }
+  }catch(err){
+    if(err && err.name!=="AbortError"){
+      failed=true;
+      chatHistory.pop(); // the failed turn never happened server-side
+      m.msg.remove();
+      chatErrMsg(err && err.message || String(err));
+      if(authErr){ chatKeyRow.hidden=false; chatKeyNote.hidden=false; chatKeyInput.focus(); }
+    }
+  }finally{
+    m.caret.remove();
+    if(rChars && !m.details.open) m.summary.textContent="reasoning · "+rChars+" chars";
+    chatSetStreaming(false);
+    chatAbort=null;
+  }
+  // A stopped stream keeps its partial text as the assistant turn; a turn
+  // that produced nothing is dropped so history stays turn-consistent.
+  const answer=m.text.textContent;
+  if(answer){
+    chatHistory.push({role:"assistant", content:answer});
+    const genS=ttftMs!=null ? Math.max((performance.now()-(t0+ttftMs))/1000,0.001) : null;
+    const outTok=(usage && Number.isFinite(usage.completion_tokens)) ? usage.completion_tokens : tokens;
+    const parts=[];
+    if(usage && Number.isFinite(usage.prompt_tokens)) parts.push(usage.prompt_tokens+" prompt tok");
+    parts.push(outTok+" tok out");
+    if(ttftMs!=null) parts.push("ttft "+Math.round(ttftMs)+" ms");
+    if(genS!=null) parts.push((outTok/genS).toFixed(1)+" tok/s");
+    if(finish && finish!=="stop") parts.push("finish: "+finish);
+    chatMeta.textContent=parts.join(" · ");
+  }else{
+    if(!failed){ m.msg.remove(); chatHistory.pop(); }
+    chatMeta.textContent="";
+  }
+}
+chatInput.addEventListener("input", chatAutosize);
+chatInput.addEventListener("keydown", e=>{
+  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); chatGenerate(); }
+});
+chatSend.addEventListener("click", chatGenerate);
+chatStop.addEventListener("click", ()=>{ if(chatAbort) chatAbort.abort(); });
+$("#chatClear").addEventListener("click", ()=>{
+  if(chatAbort) chatAbort.abort();
+  chatHistory=[];
+  chatLog.textContent="";
+  chatLog.appendChild(chatEmpty); chatEmpty.hidden=false;
+  chatMeta.textContent="";
+  chatKeyRow.hidden=true; chatKeyNote.hidden=true;
+});
+function chatUseKey(){
+  const k=chatKeyInput.value;
+  if(!k) return;
+  chatBearer=k; chatKeyInput.value="";
+  chatKeyRow.hidden=true; chatKeyNote.hidden=true;
+  chatMeta.textContent="api key accepted for this page — send your message again";
+  chatInput.focus();
+}
+$("#chatKeyUse").addEventListener("click", chatUseKey);
+chatKeyInput.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); chatUseKey(); } });
+
+/* ============================================================= ADD-NODE WIZARD */
+/* muser.node-progress.v2 checklist order, per docs/one-button contract. */
+const STEP_ORDER = ["preflight","deploy","model","enroll","daemon","netqual","smoke"];
+const STEP_LABEL = {preflight:"Preflight",deploy:"Deploy runtime",model:"Fetch model",
+  enroll:"Enroll",daemon:"Start daemon",netqual:"Measure link",smoke:"Smoke handoff"};
+const STATUS_SET = new Set(["start","ok","fail","info"]);
+
+function fmtShortSha(id){
+  if(!id) return "—";
+  return String(id).replace(/^sha256:/,"").slice(0,12);
+}
+function fmtAgo(iso){
+  const t = Date.parse(iso);
+  if(!Number.isFinite(t)) return "—";
+  const s = Math.max(0, Math.round((Date.now()-t)/1000));
+  if(s<60) return s+"s ago";
+  if(s<3600) return Math.floor(s/60)+"m ago";
+  if(s<86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+
+let registryNodes = [];
+let regPollTimer = null;
+
+function renderRegistryNodes(){
+  const host = $("#regNodes");
+  if(!host) return;
+  const hasTransfers = lastSnap && (lastSnap.transfers||[]).length>0;
+  const hasTelemetryNodes = lastSnap && (lastSnap.nodes||[]).length>0;
+  if(!registryNodes.length && !hasTransfers && !hasTelemetryNodes){
+    host.innerHTML = `<div class="topo-cta">
+      <p>Bring a remote prefill node online from here — preflight, runtime deploy, model fetch, keys/certs, daemon start, and a verified smoke handoff, all over SSH from one button.</p>
+      <button class="btn primary" type="button" id="ctaAddNodeBtn">+ Add node</button>
+    </div>`;
+    const b=$("#ctaAddNodeBtn"); if(b) b.addEventListener("click", openWizard);
+    return;
+  }
+  if(!registryNodes.length){
+    host.innerHTML = '<div class="empty">no nodes registered yet — use "+ Add node" above</div>';
+    return;
+  }
+  const REG_STATES = new Set(["draft","preflight-ok","deployed","enrolled","healthy","blocked","error"]);
+  host.innerHTML = registryNodes.map(n=>{
+    const state = REG_STATES.has(n.state) ? n.state : (n.state ? String(n.state) : "draft");
+    const alive = n.daemon_alive;
+    const daemonCls = alive===true ? "up" : alive===false ? "down" : "";
+    const daemonLbl = alive===true ? "daemon reachable" : alive===false ? "daemon unreachable" : "daemon unknown";
+    const hasNetqual = n.netqual_gbps!=null || n.netqual_rtt_ms!=null;
+    const linkParts = [];
+    if (n.netqual_gbps!=null) linkParts.push(Number(n.netqual_gbps).toFixed(2)+" Gb/s");
+    if (n.netqual_rtt_ms!=null) linkParts.push(Number(n.netqual_rtt_ms).toFixed(1)+" ms");
+    const linkText = linkParts.join(" · ");
+    const errRow = n.last_error ? `<div class="rn-err">${esc(n.last_error)}</div>` : "";
+    return `<div class="regcard">
+      <div class="rn-top">
+        <div>
+          <div class="rn-name"><span class="rn-daemon ${daemonCls}" title="${esc(daemonLbl)}"></span>${esc(n.name)}</div>
+          <div class="rn-host mono">${esc(n.user||"")}@${esc(n.host||"")}</div>
+        </div>
+        <span class="rn-state ${esc(state)}">${esc(state)}</span>
+      </div>
+      <div class="rn-rows">
+        <div><span class="k">link</span> <span class="v">${hasNetqual? linkText : "—"}</span>${hasNetqual? ' <span class="tag t-meas">measured during setup verification</span>':""}</div>
+        <div><span class="k">image</span> <span class="v mono">${esc(fmtShortSha(n.container_image))}</span></div>
+        <div><span class="k">updated</span> <span class="v">${esc(fmtAgo(n.updated))}</span></div>
+      </div>
+      ${errRow}
+    </div>`;
+  }).join("");
+}
+
+async function pollRegistry(){
+  try{
+    const headers = dashboardBearer ? {authorization:"Bearer "+dashboardBearer} : {};
+    const r = await fetch(ENDPOINT+"/v1/nodes", {cache:"no-store", headers});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const j = await r.json();
+    registryNodes = Array.isArray(j) ? j : (j.nodes || []);
+  }catch(err){
+    console.warn("muser dashboard: GET "+ENDPOINT+"/v1/nodes failed —", err);
+  }
+  renderRegistryNodes();
+  if(reduceMotion) drawPipe();
+}
+function startRegistryPoll(){
+  if(regPollTimer) return;
+  pollRegistry();
+  regPollTimer = setInterval(pollRegistry, 5000);
+}
+function stopRegistryPoll(){
+  if(regPollTimer){ clearInterval(regPollTimer); regPollTimer=null; }
+}
+const topoPanel = $("#nodes") && $("#nodes").closest(".panel");
+if(topoPanel && "IntersectionObserver" in window){
+  new IntersectionObserver(entries=>{
+    entries.forEach(e=>{ e.isIntersecting ? startRegistryPoll() : stopRegistryPoll(); });
+  }, {threshold:0.05}).observe(topoPanel);
+} else {
+  startRegistryPoll();
+}
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden) stopRegistryPoll();
+  else if(!topoPanel || topoPanel.getBoundingClientRect().bottom>0) startRegistryPoll();
+});
+
+const wizardBackdrop=$("#wizardBackdrop"), wizardForm=$("#wizardForm"), wizardProgress=$("#wizardProgress"),
+  wizardErr=$("#wizardErr"), stepListEl=$("#stepList"), rawLogEl=$("#rawLog"), wizardResultEl=$("#wizardResult");
+let wizardAbort=null;
+
+function openWizard(){
+  wizardForm.hidden=false; wizardProgress.hidden=true;
+  wizardErr.hidden=true; wizardErr.textContent="";
+  $("#wzHost").value=""; $("#wzUser").value=""; $("#wzName").value=""; $("#wzKey").value=""; $("#wzApiKey").value="";
+  if(wizardAbort){ wizardAbort.abort(); wizardAbort=null; }
+  wizardBackdrop.hidden=false;
+  $("#wzHost").focus();
+}
+function closeWizard(){
+  wizardBackdrop.hidden=true;
+  if(wizardAbort){ wizardAbort.abort(); wizardAbort=null; }
+}
+$("#addNodeBtn").addEventListener("click", openWizard);
+$("#wizardClose").addEventListener("click", closeWizard);
+$("#wizardCancel").addEventListener("click", closeWizard);
+$("#wizardDone").addEventListener("click", ()=>{ closeWizard(); pollRegistry(); });
+wizardBackdrop.addEventListener("click", e=>{ if(e.target===wizardBackdrop) closeWizard(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !wizardBackdrop.hidden) closeWizard(); });
+
+function resetSteps(){
+  stepListEl.innerHTML = STEP_ORDER.map(s=>`<div class="step pending" id="step-${s}">
+      <span class="si"></span>
+      <div class="sn"><b>${esc(STEP_LABEL[s]||s)}</b><small></small></div>
+    </div>`).join("");
+  rawLogEl.textContent="";
+  wizardResultEl.innerHTML="";
+}
+
+function bindCopyLog(){
+  const btn = $("#copyLogBtn");
+  if(!btn || !navigator.clipboard) { if(btn) btn.hidden=true; return; }
+  btn.addEventListener("click", async ()=>{
+    try{
+      await navigator.clipboard.writeText(rawLogEl.textContent);
+      btn.textContent="Copied";
+      setTimeout(()=>{ btn.textContent="Copy log"; }, 1500);
+    }catch(err){ console.warn("muser dashboard: clipboard copy failed —", err); }
+  });
+}
+
+// Every field here (step/status/detail) crosses ssh + a remote shell before it
+// reaches this browser -- esc() before any innerHTML use, no exceptions.
+function applyProgress(raw){
+  try{ rawLogEl.textContent += JSON.stringify(raw) + "\n"; rawLogEl.scrollTop = rawLogEl.scrollHeight; }
+  catch(_){ /* non-JSON-safe payload: still shown via the step row below */ }
+  const step = STEP_ORDER.includes(raw && raw.step) ? raw.step : null;
+  const status = (raw && STATUS_SET.has(raw.status)) ? raw.status : "info";
+  const detail = raw && raw.detail!=null ? String(raw.detail) : "";
+  if(step){
+    const row = document.getElementById("step-"+step);
+    if(row){
+      if(status==="start"||status==="ok"||status==="fail") row.className = "step "+status;
+      const small = row.querySelector("small");
+      if(small) small.textContent = detail;
+    }
+  }
+  if(status==="fail"){
+    wizardResultEl.innerHTML = `<div class="result-card fail">
+      <b>Add node failed — ${esc(step||"unknown step")}</b>${esc(detail||"see raw log for detail.")}
+      <div><button class="btn ghost copy-log-btn" id="copyLogBtn" type="button">Copy log</button></div>
+    </div>`;
+    bindCopyLog();
+  } else if(step==="smoke" && status==="ok"){
+    wizardResultEl.innerHTML = `<div class="result-card success">
+      <b>Node healthy</b>${esc(detail||"Smoke handoff verified — the node is ready for prefill.")}
+    </div>`;
+    pollRegistry();
+  }
+}
+
+async function startProgress(name){
+  wizardForm.hidden=true; wizardProgress.hidden=false;
+  resetSteps();
+  if(wizardAbort) wizardAbort.abort();
+  wizardAbort = new AbortController();
+  try{
+    const headers=dashboardBearer ? {authorization:"Bearer "+dashboardBearer} : {};
+    const r = await fetch(ENDPOINT+"/v1/nodes/"+encodeURIComponent(name)+"/progress", {
+      headers, cache:"no-store", signal:wizardAbort.signal
+    });
+    if(!r.ok || !r.body) throw new Error("HTTP "+r.status);
+    const reader=r.body.getReader(), decoder=new TextDecoder();
+    let pending="";
+    for(;;){
+      const chunk=await reader.read();
+      pending += decoder.decode(chunk.value||new Uint8Array(), {stream:!chunk.done});
+      let boundary;
+      while((boundary=pending.indexOf("\n\n"))>=0){
+        const event=pending.slice(0,boundary); pending=pending.slice(boundary+2);
+        const data=event.split("\n").filter(line=>line.startsWith("data:"))
+          .map(line=>line.slice(5).trimStart()).join("\n");
+        if(data){
+          try{ applyProgress(JSON.parse(data)); }
+          catch(err){ console.warn("muser dashboard: bad node-progress frame —", err); }
+        }
+      }
+      if(chunk.done) break;
+    }
+  }catch(err){
+    if(err && err.name==="AbortError") return;
+    wizardResultEl.innerHTML = `<div class="result-card fail"><b>Could not open progress stream</b>${esc(err && err.message || String(err))}</div>`;
+  }
+}
+
+$("#wizardSubmit").addEventListener("click", async ()=>{
+  const host=$("#wzHost").value.trim(), user=$("#wzUser").value.trim();
+  const name=$("#wzName").value.trim(), key=$("#wzKey").value.trim();
+  const apiKey=$("#wzApiKey").value;
+  wizardErr.hidden=true;
+  if(!host || !user){
+    wizardErr.textContent="host and user are required.";
+    wizardErr.hidden=false;
+    return;
+  }
+  if(!apiKey && !dashboardBearer && !dashboardCsrf){
+    wizardErr.textContent="the API key configured on the server is required for node management.";
+    wizardErr.hidden=false;
+    return;
+  }
+  const body={host,user};
+  if(name) body.name=name;
+  if(key) body.key_path=key;
+  const submitBtn=$("#wizardSubmit");
+  submitBtn.disabled=true;
+  try{
+    const candidateBearer=apiKey || dashboardBearer;
+    let authHeaders;
+    if(location.protocol==="https:"){
+      if(apiKey || !dashboardCsrf){
+        const login=await fetch(ENDPOINT+"/v1/dashboard/login", {
+          method:"POST", headers:{authorization:"Bearer "+candidateBearer}
+        });
+        if(!login.ok) throw new Error("dashboard login HTTP "+login.status);
+        const session=await login.json();
+        if(!session || typeof session.csrf_token!=="string") throw new Error("dashboard login returned no CSRF token");
+        dashboardCsrf=session.csrf_token;
+      }
+      dashboardBearer="";
+      authHeaders={"content-type":"application/json","x-csrf-token":dashboardCsrf};
+    } else {
+      authHeaders={"content-type":"application/json",authorization:"Bearer "+candidateBearer};
+    }
+    const r = await fetch(ENDPOINT+"/v1/nodes", {
+      method:"POST", headers:authHeaders, body:JSON.stringify(body)
+    });
+    if(r.status===401 && location.protocol==="https:") dashboardCsrf="";
+    if(r.status!==202){
+      let msg="HTTP "+r.status;
+      try{ const j=await r.json(); if(j && j.error) msg=String(j.error); }catch(_){}
+      throw new Error(msg);
+    }
+    const j = await r.json();
+    if(location.protocol!=="https:") dashboardBearer=candidateBearer;
+    $("#wzApiKey").value="";
+    startProgress(j.name || name || host);
+  }catch(err){
+    wizardErr.textContent = "could not start: "+(err && err.message || String(err));
+    wizardErr.hidden=false;
+  }finally{
+    submitBtn.disabled=false;
+  }
+});
+</script>
+</body>
+</html>

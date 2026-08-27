@@ -1,0 +1,34 @@
+{
+  "schema": "muser.release-lock.v1",
+  "state": "publication",
+  "sealing_enabled": false,
+  "candidate_creation_enabled": false,
+  "tagging_enabled": true,
+  "tagging_policy": {
+    "class": "non-release-marker",
+    "allowed_tags": [
+      "v0.1.0-beta.1"
+    ],
+    "operator_go_required": true,
+    "creates_seal": false,
+    "creates_candidate": false,
+    "creates_publication": false
+  },
+  "publishing_enabled": true,
+  "blocked_commits": [
+    "11119bd"
+  ],
+  "unlock_requires": "the exact beta marker still requires a separate operator go; sealing and candidate creation require a further lock amendment",
+  "authorization": "operator-authorized via campaign prompt 2026-08-24; publication amendment operator-authorized 2026-08-27",
+  "rationale": {
+    "findings": "all findings closed",
+    "dflash_tuning": "vlen-7 frozen",
+    "feature_contract": "frozen",
+    "cross_vendor_math_contract": "combined recipe live-qualified by the 2026-08-24 append-only amendment",
+    "wizard_native_text": "PASS",
+    "wizard_kquant_target_plus_dflash": "PASS",
+    "canonical_node_restoration": "PASS",
+    "publication": "fresh-history public export staged, gate-verified, and operator-approved 2026-08-27"
+  },
+  "reason": "Containment lifted for publication only. The fresh-history public export is operator-approved; sealing and candidate creation remain disabled, and the v0.1.0-beta.1 marker still requires an explicit operator go."
+}

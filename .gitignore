@@ -1,0 +1,40 @@
+# Rust build output
+/target/
+**/target/
+Cargo.lock.bak
+
+# Model weights / checkpoints — never commit these
+/models/
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# kvpack session artifacts (local, potentially large, contain KV data)
+*.kvpack
+kvpack-artifacts/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Logs / scratch
+*.log
+/tmp/
+/results/
+/scratchpad/
+/logs/
+__pycache__/
+*.py[cod]

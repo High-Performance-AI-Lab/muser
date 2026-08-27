@@ -1,0 +1,49 @@
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -165,6 +165,7 @@ public:
+     ggml_tensor * get_k_storage(int32_t il) const;
+     ggml_tensor * get_v_storage(int32_t il) const;
+     bool values_are_transposed() const;
++    std::vector<uint32_t> get_cells_for_positions(llama_seq_id seq_id, llama_pos start, uint32_t count) const;
+ 
+     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+ 
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1234,6 +1234,34 @@ bool llama_kv_cache::values_are_transposed() const {
+     return v_trans;
+ }
+ 
++std::vector<uint32_t> llama_kv_cache::get_cells_for_positions(
++        llama_seq_id seq_id,
++        llama_pos start,
++        uint32_t count) const {
++    if (seq_id < 0 || (size_t) seq_id >= seq_to_stream.size() || start < 0) {
++        return {};
++    }
++    const auto & cells = v_cells[seq_to_stream[seq_id]];
++    const uint32_t missing = std::numeric_limits<uint32_t>::max();
++    std::vector<uint32_t> result(count, missing);
++    for (uint32_t cell = 0; cell < cells.size(); ++cell) {
++        if (cells.is_empty(cell) || !cells.seq_has(cell, seq_id)) {
++            continue;
++        }
++        const llama_pos pos = cells.pos_get(cell);
++        if (pos < start || pos >= start + (llama_pos) count) {
++            continue;
++        }
++        const size_t offset = (size_t) (pos - start);
++        if (result[offset] != missing) {
++            return {};
++        }
++        result[offset] = cell;
++    }
++    return std::find(result.begin(), result.end(), missing) == result.end()
++        ? result : std::vector<uint32_t>{};
++}
++
+ const llama_kv_cells & llama_kv_cache::get_cells(llama_seq_id seq_id) const {
+     GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+ 

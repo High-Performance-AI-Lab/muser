@@ -1,0 +1,50 @@
+[Unit]
+StartLimitIntervalSec=600
+StartLimitBurst=5
+Description=Muser GX10 resident prefill producer
+Documentation=file:///opt/muser/llamacpp/README.md
+After=network-online.target
+Wants=network-online.target
+# docker is invoked directly by the daemon; a unit dependency would name the
+# system-scope docker.service, which user-scope systemd cannot resolve.
+
+[Service]
+Type=simple
+# This is a template, not an installable unit: the @@MUSER_..@@-bracketed
+# tokens below are substituted by `bootstrap_node.sh daemon --lane LANE
+# --model M [--dflash F] --systemd`, which also resolves --dflash into
+# ExecStart (only muser-prefilld.py's --mmproj is still unwired; nothing
+# here requires vision). Installing this file as-is fails loudly - systemd
+# tries to exec a program named after the still-unresolved token - rather
+# than silently. (Deliberately not spelling that token out again here:
+# bootstrap_node.sh's substitution is a global string replace, so writing
+# it a second time in this comment would get mangled too.)
+#
+# EnvironmentFile stays optional (leading '-') and untouched by re-runs:
+# its only current use is an operator-set MUSER_LIVE_BATCH_FULL override
+# (see muser_prefilld.py); ExecStart's own arguments are baked in below,
+# not sourced from it, so they're read with no shell-quoting ambiguity.
+EnvironmentFile=-@@MUSER_ENV_FILE@@
+WorkingDirectory=@@MUSER_WORKING_DIRECTORY@@
+ExecStart=@@MUSER_EXEC_START@@
+
+# One dropped Mac connection is retry-armed inside the daemon (see
+# muser_prefilld.py); this unit only needs to recover from the deliberate
+# fail-stop path (accelerator producer exited abnormally) or a crash. Restart
+# with a fixed delay and a burst cap so a genuinely wedged GX10 pages instead
+# of crash-looping forever.
+Restart=on-failure
+RestartSec=15
+
+# The daemon manages its own GPU lease file and warm docker container; give
+# it time to run stop_warm_exporter() on shutdown before SIGKILL.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# The daemon already refuses to start against pre-existing CUDA compute
+# clients (see acquire_gpu_lease); do not run more than one instance.
+
+# multi-user.target for a system-level install (root); default.target for
+# a `systemctl --user` install (--user managers have no multi-user.target).
+[Install]
+WantedBy=@@MUSER_WANTED_BY@@

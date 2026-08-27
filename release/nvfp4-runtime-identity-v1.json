@@ -1,0 +1,29 @@
+{
+  "schema": "muser.nvfp4-runtime-identity.v1",
+  "status": "frozen",
+  "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
+  "checkpoint": {
+    "revision": "d5109a1d187c27bd1734e81844e71aa4d964e66a",
+    "artifact_sha256": "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
+    "runtime_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/spark-runtime-v13.json",
+    "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
+  },
+  "producer_image": {
+    "tag": "muser/gx10-vllm-native:593b96a",
+    "image_id": "sha256:578888b29e42138a0821b68f94d952a4acc958660232e53d3ebff3ae9d933750",
+    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-image-593b96a-retrospective-20260823.json",
+    "receipt_sha256": "163783f1f98ae341fc2425409e885b886e54a4274468a263c4476939e3327e45"
+  },
+  "vllm_overlay": {
+    "adapter_sha256": "c49c171ffdeaa34fcff5a9be80af3256be245ed81902ce35d97cc825e197d1f7",
+    "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-adapter-593b96a-retrospective-20260823.json",
+    "receipt_sha256": "695f9ad0941181123b1bdc4eaea4db2f2249f7a18fd45217c92b328652b45e68"
+  },
+  "evidence": [
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/source-match-verdict.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/registry-after.json"
+  ],
+  "ledger_basis": "docs/goal-parity-ledger-2026-08.md final-image provenance entry, committed as 4f242d2"
+}

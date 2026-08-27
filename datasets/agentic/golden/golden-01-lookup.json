@@ -1,0 +1,115 @@
+{
+  "task_id": "lookup-003",
+  "category": "information_lookup",
+  "difficulty": "medium",
+  "prompt": "Find out what year the programming language 'Rust' first appeared. Use search to locate the history page, open it, then report the year Rust FIRST APPEARED (not the 1.0 release).",
+  "tools_shown_to_model": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search",
+        "description": "Search a reference corpus. Returns a list of {id,title,snippet}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "search terms"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "open_page",
+        "description": "Open a reference page by its id. Returns {id,title,content}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    }
+  ],
+  "expected_trajectory": [
+    {
+      "role": "system",
+      "content": "You are muser's agentic assistant. Solve the user's task by calling the provided tools. Rules:\n1. Use tools to obtain facts and to change state; never fabricate a tool result.\n2. Call one or more tools as needed, then reason over their results.\n3. When the task is complete, output your reasoning followed by a final line of the exact form `ANSWER: <result>` and nothing after it.\n4. For a JSON answer, put the raw JSON object after `ANSWER:`.\n5. Be concise and deterministic; do not ask the user questions."
+    },
+    {
+      "role": "user",
+      "content": "Find out what year the programming language 'Rust' first appeared. Use search to locate the history page, open it, then report the year Rust FIRST APPEARED (not the 1.0 release)."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "search",
+            "arguments": "{\"query\": \"Rust programming language history\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "name": "search",
+      "content": "[{\"id\": \"rust_hist\", \"title\": \"History of Rust\", \"snippet\": \"Timeline of the Rust programming language.\"}]"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "open_page",
+            "arguments": "{\"id\": \"rust_hist\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_2",
+      "name": "open_page",
+      "content": "{\"id\": \"rust_hist\", \"title\": \"History of Rust\", \"content\": \"Rust is a systems programming language. It first appeared in 2010. Version 1.0.0 was released on May 15, 2015.\"}"
+    },
+    {
+      "role": "assistant",
+      "content": "The page states Rust first appeared in 2010.\nANSWER: 2010"
+    }
+  ],
+  "final_world": {
+    "files": {},
+    "kv": {}
+  },
+  "extracted_answer": "2010",
+  "checker": {
+    "kind": "numeric_equal",
+    "tol": 0
+  },
+  "expected": {
+    "value": 2010
+  },
+  "checker_result": {
+    "passed": true,
+    "detail": "numeric_equal got=2010.0 want=2010.0 tol=0"
+  }
+}

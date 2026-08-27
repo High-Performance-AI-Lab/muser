@@ -1,0 +1,30 @@
+{
+  "name": "muse-glimmer-30b",
+  "weights_precision": "q4_k_xl",
+  "layout_table": [
+    {
+      "class": "gqa-windowed",
+      "dtype": "float16",
+      "except": [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51],
+      "from": 0,
+      "head_dim": 128,
+      "kv_heads": 2,
+      "roles": ["key", "value"],
+      "step": 1,
+      "until": 52,
+      "window_tokens": 2048
+    },
+    {
+      "class": "gqa-full",
+      "dtype": "float16",
+      "except": [],
+      "from": 3,
+      "head_dim": 128,
+      "kv_heads": 2,
+      "roles": ["key", "value"],
+      "step": 4,
+      "until": 52,
+      "window_tokens": 0
+    }
+  ]
+}

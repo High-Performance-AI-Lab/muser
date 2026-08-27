@@ -1,0 +1,68 @@
+{
+  "schema": "muser.feature-contract.v1",
+  "release": "0.1.0",
+  "status": "frozen",
+  "source_baseline": {
+    "llama_cpp_commit": "89e0aa6fd362617d9073e0dafc18e41241521572",
+    "muser_non_releasable_commit": "11119bd"
+  },
+  "hardware_contract": {
+    "apple_decode_host": "M3 Ultra 96 GB",
+    "resident_slots": 4,
+    "slot_context_tokens": 131072,
+    "logical_sessions": 64,
+    "gx10_role": ["prefill", "storage"],
+    "gx10_decode_destination": false,
+    "ane_required": false,
+    "gx10_required": true
+  },
+  "in_scope": [
+    "single Muse Glimmer model",
+    "llama.cpp source-pinned serving parity",
+    "vision",
+    "DFlash",
+    "GX10 prefill and storage",
+    "dashboard and telemetry",
+    "sessions",
+    "decode-node and storage-tier migration"
+  ],
+  "out_of_scope": [
+    "LoRA",
+    "model hot-swap or routing",
+    "infill",
+    "reranking",
+    "Responses API",
+    "Anthropic API",
+    "built-in tool execution",
+    "llama.cpp Web UI",
+    "public-CoreML ANE DFlash routing (experimental post-release)"
+  ],
+  "release_policy": {
+    "waivers_allowed": false,
+    "open_findings_allowed": false,
+    "qualification_skips_allowed": false,
+    "owner_tags_or_publishes": true,
+    "seal_requires_release_readiness_receipt": true,
+    "post_seal_change_invalidates_campaign": true
+  },
+  "amendments": [
+    {
+      "id": "p-series-nvfp4-kvpack-product-lane-2026-08-16",
+      "status": "active-unsealed",
+      "operator_decision": "Llama byte-parity (the Stage A/B evidence) is the correctness anchor and validation harness, not the product boundary. The product is kvpack — cache reuse and multi-node communication — demonstrated by disaggregated serving. NVFP4 is the mandated producer format: it is the fast FLOPS on DGX Spark, period; alternatives are out of scope. The Mac implements whatever is necessary to decode the same artifact natively. The anchor gates are retargeted from llama-vs-muser to producer-vs-Mac bit agreement plus measured drift vs the kquant reference.",
+      "product_lane": "kvpack cache reuse and multi-node communication demonstrated by disaggregated Spark NVFP4 prefill and Mac native NVFP4 decode",
+      "correctness_gates": [
+        "Mac NVFP4 oracle bit-exactness",
+        "producer-vs-Mac seam bit-exactness",
+        "measured drift versus the pinned kquant Tier-1 reference",
+        "reproducibility receipts"
+      ],
+      "p_series_out_of_scope": [
+        "vision",
+        "NVFP4 DFlash draft",
+        "W4A4 producer path"
+      ],
+      "release_lock_unchanged": true
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "muser.llama-server-compat.v1",
+  "status": "frozen-target-qualified-unsealed",
+  "source": {
+    "repository": "https://github.com/ggml-org/llama.cpp",
+    "commit": "89e0aa6fd362617d9073e0dafc18e41241521572"
+  },
+  "reference_server": {
+    "parallel": 4,
+    "flash_attention": "on",
+    "embeddings": true,
+    "pooling": "last",
+    "context_size_semantics": "total context must provide the same per-slot capacity as Muser"
+  },
+  "required_routes": [
+    "/completion", "/completions", "/v1/completions",
+    "/chat/completions", "/v1/chat/completions",
+    "/tokenize", "/detokenize", "/apply-template",
+    "/embedding", "/embeddings", "/v1/embeddings",
+    "/slots", "/props", "/models", "/v1/models",
+    "/health", "/v1/health"
+  ],
+  "muser_routes": {
+    "/api/generate": "ollama-generate",
+    "/generate": "exact-alias:/api/generate",
+    "/stream": "muser.websocket.v2",
+    "/telemetry": "compatibility-sse",
+    "/snapshot": "telemetry-json",
+    "/metrics": "prometheus-text"
+  },
+  "intentional_rejections": [
+    "infill suffix",
+    "unload keep_alive",
+    "arbitrary template replacement"
+  ],
+  "allowed_differentials": [
+    "ids", "clocks", "build fingerprints", "paths", "timings",
+    "security policy", "documented muser metrics"
+  ],
+  "numeric_thresholds": {
+    "logprob_max_absolute_error": 0.0001,
+    "embedding_min_cosine": 0.999999,
+    "embedding_max_absolute_error": 0.0001,
+    "vision_min_cosine": 0.999,
+    "vision_max_relative_l2": 0.01,
+    "token_state_revision_isolation_mismatches": 0
+  }
+}

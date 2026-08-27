@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/muser-engine",
+    "crates/muser-server",
+    "crates/muser-kvpack",
+    "crates/muser-cluster",
+    "crates/muser-bench",
+]
+exclude = ["third_party/kvpack", "third_party/metal"]
+
+[workspace.package]
+version = "0.1.0-beta.1"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[workspace.dependencies]
+# Release builds resolve kvpack only from the audited in-tree snapshot. A
+# sibling checkout must never change Muser's dependency graph.
+kvpack-core = { version = "=0.1.0-alpha.2", path = "third_party/kvpack/crates/kvpack-core" }
+kvpack = { version = "=0.1.0-alpha.2", path = "third_party/kvpack/crates/kvpack" }
+kvpack-handoff = { version = "=0.1.0-alpha.2", path = "third_party/kvpack/crates/kvpack-handoff" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
+chacha20poly1305 = "0.10.1"
+thiserror = "2"
+fancy-regex = "0.14"
+memmap2 = "0.9"
+rayon = "1.10"
+sha2 = "0.10"
+rand = "0.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+[profile.dev]
+opt-level = 0

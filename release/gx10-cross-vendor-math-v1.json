@@ -1,0 +1,135 @@
+{
+  "schema": "muser.gx10-cross-vendor-math.v1",
+  "status": "combined-recipe-live-qualified",
+  "source": {
+    "repository": "ferrite-research",
+    "branch": "abi-20260810b",
+    "crate": "crates/ferrite-lane-abi-proof",
+    "provenance": "read-only reference; integer-phase NCO ported into Muser"
+  },
+  "oracle": {
+    "date": "2026-08-14",
+    "stride_count": 268435456,
+    "stride": 16,
+    "adversarial_count": 1000000,
+    "metal_stride_hash_hex": "f440e6e27c6c3f04",
+    "metal_adversarial_hash_hex": "1a5b32d13ce785ab",
+    "metal_combined_hash_hex": "0e9c19b3b953c4af",
+    "cpu_stride_hash_hex": "f440e6e27c6c3f04",
+    "cpu_adversarial_hash_hex": "1a5b32d13ce785ab",
+    "cpu_combined_hash_hex": "0e9c19b3b953c4af",
+    "cuda_stride_hash_hex": "f440e6e27c6c3f04",
+    "cuda_adversarial_hash_hex": "1a5b32d13ce785ab",
+    "cuda_combined_hash_hex": "0e9c19b3b953c4af"
+  },
+  "muse_schedule": {
+    "context_length": 131072,
+    "dimensions": 128,
+    "frequency_base_f32": 500000.0,
+    "theta_scale_f32_bits_hex": "3f508ac1",
+    "phase_per_radian_f64_bits_hex": "41c45f306dc9c883",
+    "phase_rounding": "floor(nonnegative_angle * phase_per_radian + 0.5), low_u32",
+    "table_layout": "position-major adjacent (cos_f32, sin_f32) pairs",
+    "attn_factor": 1.0
+  },
+  "qualification": {
+    "rope_q_exact": "4096/4096",
+    "rope_k_exact": "256/256",
+    "all_layers_exact": "52/52 layers, 6656/6656 f32 cells per layer",
+    "full_logits_exact": "202048/202048",
+    "rope_cache_sha256": "948949af0c4b0106dd26071d839e9643688c4c5a24f57a0fe9872d2ad49b2131",
+    "result_norm_sha256": "66d39e29aeff400c5b9092c1e476e44fced0773e5bdab87492dd10de5013b3c9",
+    "result_output_sha256": "f77a304f339cb5847ffcccce56f54aa166c9a0ffcbb780adae001ad8958a4b7f",
+    "container_image_id": "sha256:b2ff272f267ab32555367bfe17f6a2efa08afc8f6cd522aba1dbf3c2b7342516",
+    "container_adapter_sha256": "dc79d9ea52c118725e437bfa23dde8b976955e05b594f11617c397778af848cb",
+    "container_receipt": "muser-build-receipt://gx10-container-nco-fixed-20260814.json",
+    "container_receipt_sha256": "ce8156aa0846c1b46175530f669aafe4de26fbabb5f167cea5afe949da4515d9",
+    "prefill_attention_diagnostic": {
+      "tokens": 65,
+      "reference_directory": "muser-build-receipt://gx10-prefill65-nco-attention-20260814",
+      "attn_out_layer0_exact": "266240/266240",
+      "attn_gated_layer0_exact": "266240/266240",
+      "attn_o_proj_layer0_exact": "432640/432640",
+      "ffn_input_layer0_exact": "432640/432640",
+      "layer_output_layer0_exact": "432640/432640",
+      "max_abs_error": 0.0,
+      "full_2048_256_qualification": "pending"
+    },
+    "gx003_status": "open"
+  },
+  "combined_attn32_residual_f16_qualification": {
+    "date": "2026-08-24",
+    "scope": "kquant/target-plus-dflash three-handoff onboarding recipe",
+    "arithmetic_lineage": [
+      {
+        "commit": "27b5790fe6c6c38fdee42c54dab099471109278f",
+        "change": "attention 32-lane x 4 reduction tree"
+      },
+      {
+        "commit": "80f294f181b95fb5f373d09ef4976c2c4505214e",
+        "change": "residual model-dtype materialization"
+      },
+      {
+        "commit": "6f56983260d5fefcc415c00497db166e4a187e44",
+        "change": "RoPE materialization"
+      },
+      {
+        "commit": "d588127a121f5cbaa5579e5f31771c3cf32a6b4d",
+        "change": "layer-zero learned-RMS fused boundary"
+      },
+      {
+        "commit": "dd1bfb1d7b4c4f3a5361fac99521d79fbb719108",
+        "change": "fused combined adapter pin"
+      },
+      {
+        "commit": "69a3a2bf21f45056ca2850baba9f273b7f64e32e",
+        "change": "live FIFO schedule pin"
+      },
+      {
+        "commit": "f639bef958f2be74b5cbfede7f359e30da0a2307",
+        "change": "delayed-writer rendezvous"
+      }
+    ],
+    "producer": {
+      "image_id": "sha256:de4dec7e7e0300a3df75a0b8a231c28d781fe22f32b808ba16a188696a794094",
+      "adapter_sha256": "fbb73b2393833ba5efeb7e2c726f87dc6c8652a8e5430c8b447502bd32d8a7da",
+      "llama_cpp_revision": "89e0aa6fd362617d9073e0dafc18e41241521572",
+      "receipt": "muser-build-receipt://gx10-container-89e0aa6-combined-attn32-residual-f16-20260824T115620Z.json",
+      "receipt_sha256": "7ed4b5b4b5859a348627710141373b95b5c293ff7d172d15ef9f1b27a36ed0ab"
+    },
+    "offline_ladder": {
+      "receipt": "muser-receipt://wizard-validation-20260823/attempt-29-attn32-residual-full-ladder-20260824T115955Z/comparison.json",
+      "receipt_sha256": "06de534306b2d98c3404a50786704ee8417439f011f43c04761103a7a1408052",
+      "prompt_rows": 512,
+      "captured_boundaries": 19,
+      "bit_exact": true
+    },
+    "live_qualification": {
+      "attempt": 31,
+      "enrollment": "wizard-combined-a31-20260824-132639",
+      "evidence_root": "muser-receipt://wizard-validation-20260823/attempt-31-combined-full-20260824T132639Z",
+      "summary": "muser-receipt://wizard-validation-20260823/attempt-31-combined-full-20260824T132639Z/validation-summary.json",
+      "summary_sha256": "daa7c470b34d597f6c8c1b0888832ab3e4139035dd8e64d6f7edf49f9318fbd3",
+      "qualifier_log": "muser-receipt://wizard-validation-20260823/attempt-31-combined-full-20260824T132639Z/wizard-smoke/20260824T132812Z-2ce45ebb6206485987e02f6b15c1d3e6.command.log",
+      "qualifier_log_sha256": "5e592479b31d89c2046861a388841b6efdf11ce75dd49096e10bb33b5781d769",
+      "pipeline_stages_passed": "7/7",
+      "handoff_repetitions": 3,
+      "prompt_tokens": 2048,
+      "output_tokens": 256,
+      "target_tokens_exact": true,
+      "target_token_agreement": 1.0,
+      "full_logits_exact": true,
+      "maximum_logit_delta": 0.0,
+      "mean_logit_delta": 0.0,
+      "dflash_tokens_exact": true,
+      "dflash_trace_exact": true,
+      "installed_payload_gbps": [
+        9.811736277430875,
+        8.886918787957047,
+        8.689888960836322
+      ],
+      "healthy_transition": true,
+      "canonical_restoration": true
+    }
+  }
+}

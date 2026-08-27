@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/High-Performance-AI-Lab/muser/datasets/agentic/schema.json",
+  "title": "muser agentic task record",
+  "description": "One JSONL line = one deterministically-scorable agentic task for the muser demo runner. The model is shown ONLY prompt + the name/description/parameters of each tool; stub, expected, checker, and reference_solution are runner-side oracle data and are never placed in the model context.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "category", "difficulty", "prompt", "tools", "expected", "checker"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z]+-[0-9]{3}$"},
+    "category": {
+      "type": "string",
+      "enum": ["information_lookup", "calculation", "multi_tool_planning", "code_edit", "verification_chain"]
+    },
+    "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+    "prompt": {"type": "string", "minLength": 1, "description": "The user turn shown to the model."},
+    "world": {
+      "type": "object",
+      "description": "Optional seed/mutable state for stateful builtins.",
+      "properties": {
+        "files": {"type": "object", "additionalProperties": {"type": "string"}},
+        "kv": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "parameters", "stub"],
+        "properties": {
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "parameters": {"type": "object", "description": "JSON Schema for the tool arguments (OpenAI function shape)."},
+          "stub": {
+            "type": "object",
+            "description": "Runner-side deterministic implementation. NEVER sent to the model.",
+            "oneOf": [
+              {
+                "properties": {
+                  "kind": {"const": "fixture"},
+                  "cases": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "when": {"type": "object"},
+                        "when_contains": {"type": "object"},
+                        "return": {}
+                      }
+                    }
+                  },
+                  "default": {}
+                },
+                "required": ["kind", "cases"]
+              },
+              {
+                "properties": {
+                  "kind": {"const": "builtin"},
+                  "fn": {"type": "string", "enum": ["calc.eval", "unit.convert", "fs.read", "fs.write", "fs.apply_patch"]}
+                },
+                "required": ["kind", "fn"]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "description": "Oracle target for the checker. Exactly the keys the chosen checker reads.",
+      "properties": {
+        "answer": {"type": "string"},
+        "value": {},
+        "set": {"type": "array"},
+        "substrings": {"type": "array", "items": {"type": "string"}},
+        "files": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "checker": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["exact_match", "numeric_equal", "set_equal", "contains_all", "bool_equal", "json_equal", "final_state"]
+        },
+        "tol": {"type": "number"},
+        "strip": {"type": "array", "items": {"type": "string"}},
+        "sep": {"type": "string"},
+        "normalize": {"type": "array", "items": {"type": "string"}},
+        "normalize_trailing_newline": {"type": "boolean"}
+      }
+    },
+    "reference_solution": {
+      "type": "object",
+      "description": "The ideal tool-call trajectory. Runner-side only; used to prove the task is solvable and the checker is correct.",
+      "required": ["steps"],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "call": {
+                "type": "object",
+                "required": ["tool", "args"],
+                "properties": {"tool": {"type": "string"}, "args": {"type": "object"}}
+              },
+              "observe": {},
+              "final": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

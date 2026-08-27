@@ -1,0 +1,127 @@
+diff --git a/ggml/src/ggml-cuda/rope.cu b/ggml/src/ggml-cuda/rope.cu
+index 78d2fa59b..b939729db 100644
+--- a/ggml/src/ggml-cuda/rope.cu
++++ b/ggml/src/ggml-cuda/rope.cu
+@@ -546,6 +546,101 @@ static void rope_norm_cuda(const T *            x,
+     }
+ }
+ 
++// DFlash draft KV injection rope: reproduce the Mac's canonical NCO table
++// (muser-engine/src/rope_nco.rs) bit-exactly. The theta schedule advances by
++// iterative f32 multiply and the two multiply/FMA boundaries match
++// muser_cross_vendor_rope_neox in muser-engine/src/shaders/muse_reference.metal.
++// Selected per dispatch by MUSER_DFLASH_ROPE_NCO, which the exporter sets only
++// while the draft context is injected; the target's qualified rope route is
++// unreachable through this path. The host-side NCO helpers in this file are
++// __host__-only, so this kernel carries device-resident copies of the same
++// coefficients and operation order.
++static __device__ const int32_t MUSER_NCO_SIN_Q30[8] = {
++    0, 843314857, 0, -86699833, 0, 2673908, 0, -38839,
++};
++static __device__ const int32_t MUSER_NCO_COS_Q30[7] = {
++    1073741823, 0, -331167724, 0, 17017653, 0, -341628,
++};
++
++static __device__ __forceinline__ int32_t muser_nco_horner_dev(
++        const int32_t * coefficients, int count, uint32_t x) {
++    int32_t accumulator = coefficients[count - 1];
++    for (int index = count - 2; index >= 0; --index) {
++        const int64_t product = (int64_t) accumulator * (int64_t) x;
++        accumulator = coefficients[index] + (int32_t) (product >> 32);
++    }
++    return accumulator;
++}
++
++static __device__ __forceinline__ void muser_nco_sincos_dev(
++        uint32_t phase, float * sin_out, float * cos_out) {
++    const uint32_t quadrant = (phase >> 30) & 3u;
++    const uint32_t mirrored = (phase >> 29) & 1u;
++    const uint32_t fraction = phase & 0x1fffffffu;
++    const uint32_t raw_x = fraction << 3;
++    const uint32_t x = mirrored == 1u
++        ? (raw_x == 0u ? 0xffffffffu : 0u - raw_x)
++        : raw_x;
++    const int32_t sin_fixed = muser_nco_horner_dev(MUSER_NCO_SIN_Q30, 8, x);
++    const int32_t cos_fixed = muser_nco_horner_dev(MUSER_NCO_COS_Q30, 7, x);
++    const int32_t sin_local_fixed = mirrored == 1u ? cos_fixed : sin_fixed;
++    const int32_t cos_local_fixed = mirrored == 1u ? sin_fixed : cos_fixed;
++    const float sin_local = (float) sin_local_fixed * (1.0f / 1073741824.0f);
++    const float cos_local = (float) cos_local_fixed * (1.0f / 1073741824.0f);
++    if (quadrant == 0u) {
++        *sin_out = sin_local; *cos_out = cos_local;
++    } else if (quadrant == 1u) {
++        *sin_out = cos_local; *cos_out = -sin_local;
++    } else if (quadrant == 2u) {
++        *sin_out = -sin_local; *cos_out = -cos_local;
++    } else {
++        *sin_out = -cos_local; *cos_out = sin_local;
++    }
++}
++
++static __device__ __forceinline__ uint32_t muser_nco_phase_dev(float angle) {
++    // Exact binary64 value 0x1.45f306dc9c883p+29 = 2^32 / (2*pi).
++    const double phase_per_radian = 683565275.5764316;
++    const uint64_t rounded = (uint64_t) floor((double) angle * phase_per_radian + 0.5);
++    return (uint32_t) rounded;
++}
++
++static __global__ void muser_rope_neox_nco_f32(
++        const float * x, float * dst,
++        const int ne00, const int ne01, const int ne02,
++        const int s01, const int s02, const int s03,
++        const int s1, const int s2, const int s3,
++        const int n_dims, const int32_t * pos,
++        const int64_t * row_indices, const int set_rows_stride) {
++    const int row = blockIdx.x;
++    const int i3 = row / (ne01*ne02);
++    const int i2 = (row - i3*ne01*ne02) / ne01;
++    const int i1 = row - i3*ne01*ne02 - i2*ne01;
++    const int ix = i1*s01 + i2*s02 + i3*s03;
++    int idst = i1*s1 + i2*s2 + i3*s3;
++    if (set_rows_stride != 0) {
++        idst = i1*s1 + row_indices[i2]*set_rows_stride;
++    }
++    const int position = pos[i2];
++    if (position < 0) { __trap(); }
++    float theta = (float) position;
++    for (int pair = 0; pair < n_dims/2; ++pair) {
++        float sin_theta;
++        float cos_theta;
++        muser_nco_sincos_dev(muser_nco_phase_dev(theta), &sin_theta, &cos_theta);
++        const float x0 = __half2float(__float2half_rn(x[ix + pair]));
++        const float x1 = __half2float(__float2half_rn(x[ix + pair + n_dims/2]));
++        dst[idst + pair] = __half2float(__float2half_rn(
++            __fmaf_rn(-x1, sin_theta, __fmul_rn(x0, cos_theta))));
++        dst[idst + pair + n_dims/2] = __half2float(__float2half_rn(
++            __fmaf_rn(x0, sin_theta, __fmul_rn(x1, cos_theta))));
++        theta *= 0x1.a11582p-1f;  // exact f32 500000^(-2/128)
++    }
++    for (int i0 = n_dims; i0 < ne00; ++i0) {
++        dst[idst + i0] = x[ix + i0];
++    }
++}
++
+ template <bool forward, typename T, typename D>
+ static void rope_neox_cuda(const T *            x,
+                            D *                  dst,
+@@ -570,6 +665,20 @@ static void rope_neox_cuda(const T *            x,
+                            const int64_t *      row_indices,
+                            const int            set_rows_stride,
+                            cudaStream_t         stream) {
++    if constexpr (forward && std::is_same_v<T, float> && std::is_same_v<D, float>) {
++        if (getenv("MUSER_DFLASH_ROPE_NCO") != nullptr && freq_factors == nullptr &&
++                ext_factor == 0.0f) {
++            if (n_dims != 128 || freq_base != 500000.0f || freq_scale != 1.0f ||
++                    attn_factor != 1.0f) {
++                GGML_ABORT("Muser DFlash RoPE NCO rejected non-DFlash geometry");
++            }
++            muser_rope_neox_nco_f32<<<nr, 1, 0, stream>>>(
++                x, dst, ne00, ne01, ne02, s01, s02, s03, s1, s2, s3,
++                n_dims, pos, row_indices, set_rows_stride);
++            CUDA_CHECK(cudaGetLastError());
++            return;
++        }
++    }
+     GGML_ASSERT(ne00 % 2 == 0);
+     const dim3 block_dims(1, CUDA_ROPE_BLOCK_SIZE, 1);
+     const int  n_blocks_x = (ne00 + 2 * CUDA_ROPE_BLOCK_SIZE - 1) / (2 * CUDA_ROPE_BLOCK_SIZE);

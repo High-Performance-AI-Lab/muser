@@ -1,0 +1,20 @@
+{
+  "schema": "muser.vendored-crate-provenance.v1",
+  "crate": "metal",
+  "version": "0.33.0",
+  "crates_io_archive_sha256": "c7047791b5bc903b8cd963014b355f71dc9864a9a0b727057676c1dcae5cbc15",
+  "upstream_repository": "https://github.com/gfx-rs/metal-rs",
+  "upstream_commit": "cabf490d5fb2c53c0b2d7ecff7b2b869ba948cdb",
+  "source_tree_sha256": "267af301dd6b6a4db5e740a55bf0ffe8b73e7f240b8174640518822dfbe57d48",
+  "licenses": ["MIT", "Apache-2.0"],
+  "patches": [
+    {
+      "file": "Cargo.toml",
+      "description": "Alias maintained pastey 0.2.3 as paste."
+    },
+    {
+      "file": "Cargo.toml.orig",
+      "description": "Record the same dependency-only patch in the source manifest."
+    }
+  ]
+}

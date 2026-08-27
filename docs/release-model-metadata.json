@@ -1,0 +1,10 @@
+{
+  "schema": "muser.gguf-metadata-identity.v1",
+  "revision": "a0532f7263ee67f1e0a5f5c5fdcd50dd62fc9aa4",
+  "target_sha256": "7e9b74b7c8875e9e265695df9613bf6290f2392e479ce740495a129019c488d8",
+  "tokenizer_hash_algorithm": "muser.gguf-tokenizer-metadata.v1",
+  "tokenizer_metadata_sha256": "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
+  "chat_template_key": "tokenizer.chat_template",
+  "chat_template_bytes": 7167,
+  "chat_template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e"
+}

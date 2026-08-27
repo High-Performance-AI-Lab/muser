@@ -1,0 +1,27 @@
+{
+  "failure_gate": "dflash-assistant-trace-parity",
+  "gate_order_evidence": {
+    "exact_final_dflash_tokens": true,
+    "exact_target_full_logits": true,
+    "exact_target_tokens": true
+  },
+  "identity": "gx10-dflash-f32-trace-v1-89e0aa6",
+  "image_id": "sha256:6173f3c439b47608a7fbba943f52930267e324d64e127463d3410e653a6e87b1",
+  "schema": "muser.gx10-strict-diagnostic-summary.v1",
+  "trace": {
+    "accepted_local_sha256": "ddfe19786bd4489ae8ec1df4e71b2b84d1f5fc6683a43367f515a72a95601ba6",
+    "accepted_remote_sha256": "1cab1004d3eb56eeea3d1e504c5ecd2fb95f608addba6e0d5254a133d9cb1207",
+    "draft_local_sha256": "0e29aa311bfe54f97c574bede52649a55df193807cf9a5bc9806967b90d77c20",
+    "draft_remote_sha256": "c300dcebf088c3d50828682c3ef8dd2af8a34f6e1f1cc12ec0477954fa82efca",
+    "first_count_divergence_round": 1,
+    "first_proposal_token_divergence": "not-retained-by-this-run",
+    "local_acceptance": 0.940677966101695,
+    "local_accepted": 222,
+    "local_accepted_prefix_counts": [1, 2, 4, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 5],
+    "local_drafted": 236,
+    "remote_acceptance": 0.9285714285714286,
+    "remote_accepted": 221,
+    "remote_accepted_prefix_counts": [1, 0, 4, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 0],
+    "remote_drafted": 238
+  }
+}

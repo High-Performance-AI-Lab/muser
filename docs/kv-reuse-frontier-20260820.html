@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Standalone copy of the published research artifact.
+     Source of record (Markdown): docs/kv-reuse-frontier-20260820.md -->
+<title>The KV-Reuse Frontier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400..700;1,400..700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F6F6F2; --panel:#EFEFE8; --ink:#20241E; --muted:#6A7263; --rule:#D8D9CE;
+  --accent:#9C5A2C; --accent-soft:#F0E2D4;
+  --exact:#2E6B4F; --exact-bg:#E2EDE6; --meas:#3D5A80; --meas-bg:#E2E8F0; --hyp:#A07C1F; --hyp-bg:#F3EAD1;
+  --code-bg:#ECEDE4;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#141613; --panel:#1C1F1B; --ink:#E6E7E0; --muted:#9BA292; --rule:#31352E;
+    --accent:#D08A4F; --accent-soft:#3A2C1E;
+    --exact:#7FC2A2; --exact-bg:#1E312A; --meas:#93B4D8; --meas-bg:#1F2937; --hyp:#D6B45E; --hyp-bg:#332B18;
+    --code-bg:#22251F;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#141613; --panel:#1C1F1B; --ink:#E6E7E0; --muted:#9BA292; --rule:#31352E;
+  --accent:#D08A4F; --accent-soft:#3A2C1E;
+  --exact:#7FC2A2; --exact-bg:#1E312A; --meas:#93B4D8; --meas-bg:#1F2937; --hyp:#D6B45E; --hyp-bg:#332B18;
+  --code-bg:#22251F;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"STIX Two Text",Georgia,"Times New Roman",serif;
+  font-size:17px; line-height:1.62; margin:0; padding:0;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:47rem; margin:0 auto; padding:3.5rem 1.4rem 6rem}
+header.masthead{border-bottom:2px solid var(--ink); padding-bottom:1.6rem; margin-bottom:1.2rem}
+.eyebrow{
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.72rem; font-weight:600;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 .9rem;
+}
+h1{
+  font-size:clamp(2rem,5.5vw,2.9rem); line-height:1.08; font-weight:600; margin:0 0 .8rem;
+  text-wrap:balance; letter-spacing:-.01em;
+}
+.standfirst{font-size:1.08rem; font-style:italic; color:var(--muted); margin:0 0 1.1rem; max-width:40rem}
+.meta{
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.78rem; color:var(--muted);
+  display:flex; flex-wrap:wrap; gap:.4rem 1.4rem; margin:0;
+}
+.meta b{color:var(--ink); font-weight:600}
+nav.toc{
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.82rem;
+  border-bottom:1px solid var(--rule); padding:1rem 0 1.2rem; margin-bottom:2.4rem;
+  display:flex; flex-wrap:wrap; gap:.35rem .5rem;
+}
+nav.toc a{
+  color:var(--ink); text-decoration:none; border:1px solid var(--rule); border-radius:2px;
+  padding:.18rem .55rem; background:var(--panel);
+}
+nav.toc a:hover,nav.toc a:focus-visible{border-color:var(--accent); color:var(--accent)}
+h2{
+  font-size:1.5rem; font-weight:600; line-height:1.2; margin:3rem 0 1rem; text-wrap:balance;
+  padding-top:1.4rem; border-top:1px solid var(--rule);
+}
+h2 .no{color:var(--accent); font-feature-settings:"tnum"; margin-right:.55rem}
+h3{font-size:1.08rem; font-weight:600; margin:1.8rem 0 .6rem; text-wrap:balance}
+p{margin:0 0 1rem}
+ul,ol{margin:0 0 1.1rem; padding-left:1.3rem}
+li{margin-bottom:.5rem}
+li::marker{color:var(--accent)}
+strong{font-weight:600}
+em{font-style:italic}
+a{color:var(--accent); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:2px}
+code,.mono{
+  font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace; font-size:.84em;
+  background:var(--code-bg); padding:.08em .3em; border-radius:2px;
+}
+.tag{
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.66rem; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; border-radius:2px; padding:.13em .45em;
+  white-space:nowrap; vertical-align:baseline;
+}
+.tag.exact{color:var(--exact); background:var(--exact-bg)}
+.tag.meas{color:var(--meas); background:var(--meas-bg)}
+.tag.hyp{color:var(--hyp); background:var(--hyp-bg)}
+.tag.derived{color:var(--accent); background:var(--accent-soft)}
+.callout{
+  border-left:3px solid var(--accent); background:var(--panel);
+  padding:.9rem 1.1rem; margin:0 0 1.1rem; border-radius:0 3px 3px 0;
+}
+.callout p:last-child{margin-bottom:0}
+.tablewrap{overflow-x:auto; margin:0 0 1.2rem; border:1px solid var(--rule); border-radius:3px}
+table{border-collapse:collapse; width:100%; min-width:640px; font-size:.86rem}
+caption{text-align:left; font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.75rem;
+  color:var(--muted); padding:.55rem .8rem; border-bottom:1px solid var(--rule)}
+th{
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.7rem; font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; text-align:left; color:var(--muted);
+  padding:.55rem .8rem; border-bottom:2px solid var(--rule); background:var(--panel);
+}
+td{padding:.55rem .8rem; border-bottom:1px solid var(--rule); vertical-align:top; line-height:1.45}
+tr:last-child td{border-bottom:none}
+td:first-child{font-weight:600}
+.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; font-size:.92em}
+.ledger li{margin-bottom:.65rem}
+.refs{font-size:.82rem; color:var(--muted); line-height:1.7}
+.refs .mono{font-size:.9em}
+footer{
+  margin-top:3.5rem; padding-top:1.2rem; border-top:2px solid var(--ink);
+  font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:.75rem; color:var(--muted);
+}
+@media (prefers-reduced-motion:no-preference){
+  html{scroll-behavior:smooth}
+}
+a:focus-visible,nav.toc a:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="masthead">
+  <p class="eyebrow">High Performance AI Lab · Research Report</p>
+  <h1>The KV-Reuse Frontier</h1>
+  <p class="standfirst">How far cache reuse goes beyond prefix caching — the exact algebra, the measured barriers, the repair toolbox, and a primed-appliance program. Cross-family throughout; Muse is one worked row.</p>
+  <p class="meta"><span><b>2026-08-20/21</b></span><span>7 passes: 4 literature sweeps · ideation · original theory · adversarial review (corrections applied)</span><span>Tags: <span class="tag exact">exact</span> <span class="tag meas">meas</span> <span class="tag hyp">hyp</span> <span class="tag derived">derived</span></span></p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#tldr">0 · TL;DR</a><a href="#vision">1 · Vision, quantified</a><a href="#algebra">2 · The algebra</a><a href="#breaks">3 · What breaks</a><a href="#toolbox">4 · Repair toolbox</a><a href="#crossmodel">5 · Cross-model</a><a href="#programs">6 · Per-family programs</a><a href="#ledger">7 · Claim ledger</a><a href="#bets">8 · Frontier bets</a><a href="#week">9 · First week</a><a href="#refs">10 · References</a>
+</nav>
+
+<h2 id="tldr"><span class="no">0</span>TL;DR — the code, cracked as far as it cracks today</h2>
+<ol>
+<li><strong>RoPE's coordinate is solved; positional <em>semantics</em> is not.</strong> Re-anchoring a cached key is one exact rotation (a group action, production-deployed for years: llama.cpp K-shift, FlashInfer pre-RoPE caches). But position also leaks into the <em>values</em> via the causal mask (implicit position), and that part is unmeasured — barrier #5 below, not a RoPE problem. Stop thinking about rotations; start thinking about what the values remember.</li>
+<li><strong>Reads compose exactly; representations don't — and only exact reads are free.</strong> Softmax attention over concatenated caches decomposes exactly into per-segment (max-logit, exp-sum, partial-output) triples. But Q is never cached: evaluating cross-segment coupling above the first mixing layer requires the conditioned forward pass you were avoiding. The honest accounting: <strong>exact composition of B onto A costs a full prefill of B in A's context — you save A's prefill and nothing else.</strong> Every non-prefix composition of representations is approximate by construction; the science is how much approximation the acceptance gate admits.</li>
+<li><strong>Contextualization is concentrated and largely repairable — but not the way the famous papers say.</strong> "15% token recompute suffices" (CacheBlend) holds only on loosely coupled RAG QA; multi-key retrieval needs 70–90% (CacheClip); on cross-chunk binding, token recompute caps at 36% recovery while a rank-64 feature-space patch recovers 97% (Kamera — and our own algebra <em>predicts</em> that shape, §3). Ranked, replicated barriers: missing cross-segment conditioning &gt; duplicate attention sinks &gt; softmax calibration &gt; magnitude drift (absent under QK-norm architectures like Muse) &gt; implicit position (never isolated).</li>
+<li><strong>The economics sell time, not bytes — and the right metric is break-even reuse count.</strong> A cache is ~3,000× larger than the text it memoizes, and its information content is the text's (the decoder of that "compression" is the model itself — no free headroom there). Restore beats <em>local decode-box</em> prefill by large factors, but against an overnight GX10 prefill the honest crossover is ~20–40×, and TTFT on composed contexts is dominated by the SWA warm-up, not I/O. What justifies a 100&nbsp;TB shipped library is <strong>cold-start insurance for air-gapped deployment</strong> — you can't know tomorrow's access distribution, so you ship everything — plus Zipf-head serving where reuse counts are high (production data: top 5% of chunks serve 60% of requests; 79% are never re-accessed — Cache-Craft).</li>
+<li><strong>The story is cross-family; each architecture sits at a different point on one map.</strong> Composition = exact per-family mechanics (rotation group for dense RoPE, re-indexing for ALiBi, latent append for MLA, scan composition for linear/SSM — with a caveat, §2.5 — multiset union for NoPE planes) + the shared contextualization obstacle. Repair machinery and gates are built once. Nearly all published repair evidence comes from dense-RoPE models — the common case. Muse sits at the easy corner: its growing cache is 13 position-free NoPE planes, so composition concentrates in 13 of 52 layers — which also carry the heaviest sinks (0.33 mass) and do the retrieval. MLA is nearly as privileged. Gated-hybrid SSM is the hard corner: there, contextualization contaminates the <em>mechanics</em> too.</li>
+<li><strong>The appliance is byte-feasible today; capacity varies ~25× by family.</strong> 100&nbsp;TB holds <span class="num">~780M</span> tokens of Llama-8B cache, <span class="num">~1.4–3B</span> of MLA, <span class="num">~7.5B</span> of Muse long-range cache at f16 — <span class="num">~28B</span> at 4-bit, i.e. several English Wikipedias <em>in the 4-bit branch</em> (at f16, roughly one). The open questions are hit rate and composition fidelity, not capacity.</li>
+</ol>
+
+<h2 id="vision"><span class="no">1</span>The vision, quantified honestly</h2>
+<p>Target: overnight batch prefill; morning jobs run faster; ship a primed appliance (iodyne Pro Data class, ~100&nbsp;TB) to a ship, a station, an air-gapped site.</p>
+<p><strong>What a cached token costs <span class="tag exact">exact</span>.</strong> Muse long-range (NoPE) cache: 13 layers × 1,024&nbsp;B = <span class="num">13,312&nbsp;B/token</span> — a ~3,000× amplification over ~4.3&nbsp;B/token of UTF-8 (~6,000× over 17.6-bit token ids at vocab 202,048). Dense Llama-3-8B: ~128&nbsp;KB/token; 70B: ~320&nbsp;KB/token; MLA: ~2–4&nbsp;KB/token. Muse's advantage decomposes as ~4× from GQA-2 and ~4× from NoPE-only growth — state both factors or reviewers will call double-counting. The bound "cache entropy ≤ text entropy" (2604.15356) is true and useless here: its decoder is the model. <strong>The appliance sells time (and joules), not bytes.</strong></p>
+<p><strong>Break-even is a reuse count, not a bandwidth.</strong> Every library token is prefilled once; you recover its cost only on reuse. Per-request restore-vs-prefill on the <em>decode box</em> favors restore by orders of magnitude (2P ≈ 60&nbsp;GFLOP/token vs a 13&nbsp;KB read), but the honest fleet comparison is against the overnight GX10 producer at 5–20k tok/s: crossover ~20–40×. And per-request TTFT on a composed context is dominated by the SWA warm-up (~5–9&nbsp;s at W&nbsp;=&nbsp;2048 on M3 Ultra-class compute), not by the restore (~0.6&nbsp;s for a full 131k NoPE image at 3&nbsp;GB/s). The binding constraints are reuse rate and warm-up, never bandwidth.</p>
+<p><strong>Capacity and I/O, with assumptions labeled.</strong> 100&nbsp;TB / 13,312&nbsp;B ≈ <span class="num">7.5B</span> tokens f16; ≈ <span class="num">28B</span> at KIVI-4-bit (kvpack carries the codec with honest error bounds). English Wikipedia ≈ 6B tokens ≈ 80&nbsp;TB f16 — marginal at f16, comfortable at 4-bit. 3&nbsp;GB/s is an <em>assumption</em> (TB4 single-port tops at ~2.6–2.8&nbsp;GB/s; multi-path or TB5 needed), and kvpack's integrity model means every restored byte is MAC-verified — the number that matters is <strong>verified end-to-end restore throughput, measured</strong> (E6). Energy <span class="tag hyp">hyp</span>: prefill ~tens of mJ/token vs NVMe read ~tens of µJ/token — a plausible 10³–10⁴× that one wall-plug measurement converts from <code>mock</code> to measured in muser's economics (<code>joules_saved</code> currently has no writer).</p>
+<p><strong>Hit rate is a policy problem with real data.</strong> Production trace (Cache-Craft, 2502.15734): exact-prefix hits cover 8% of requests / 18% of tokens; top 5% of chunks appear in 60% of requests; 79% never re-accessed in a month. Fit Zipf, size with Che's approximation, and define "90% primed" as <strong>fraction of prefill FLOPs avoided</strong> — never request rate. The Zipf head fits in far less than 100&nbsp;TB; the full-library size is justified by air-gapped cold-start insurance, and should be argued as such.</p>
+
+<h2 id="algebra"><span class="no">2</span>The algebra: what is exactly true (with its edges)</h2>
+<ol>
+<li><strong>Log-sum-exp merge monoid <span class="tag exact">exact</span>.</strong> For any partition of the cache, softmax attention is the associative merge of per-segment triples (m,&nbsp;l,&nbsp;o) — flash-decoding / Hydragen (2402.05099). The merged output obeys o′ = (1−β)·o<sub>S</sub> + β·ō<sub>ext</sub> with β = σ(ℓ<sub>ext</sub> − ℓ<sub>S</sub>): exact <em>per layer</em>, not first-order. Edges: (a) <em>read-time deletion</em> of a segment is trivial (don't read its rows) — subtracting from a stored aggregate is not generally possible (the decode query isn't known at store time) and is catastrophic cancellation in f16 when the deleted mass dominates; (b) FlashAttention computes each segment's per-(token,&nbsp;head) LSE at prefill and discards it — <strong>store it</strong> (64&nbsp;B/layer-token: 6% of f16 KV, 25% of 4-bit — store as offset-bf16 or f32, since raw f16 error ~0.03 on logits reaching ~55 corrupts the merge weight); (c) using it needs the <em>other</em> side's ℓ<sub>ext</sub>, which needs B's queries — cheap at the first mixing layer, conditioned-stack-priced above it (§3's accounting). The sidecar is genuinely free at prefill and genuinely decisive at the first NoPE layer; above that it is an estimator, not a bound.</li>
+<li><strong>RoPE group action <span class="tag exact">exact</span>.</strong> R(Δ) re-anchors a cached key exactly; one hop from a canonical anchor, trig in f32, never chained. Two pairing conventions (NeoX vs GPT-J) — wrong-convention rotation is the classic silent-garbage bug (cacheweaver's canary exists for it). kvpack's <code>canonical-kv-prerope-v2</code> (pre-RoPE f32 keys, consumer rotates once in its pinned kernel) is the FlashInfer-style endgame: natively position-free caches.</li>
+<li><strong>Frequency surgery <span class="tag exact">exact</span> transformation; semantically approximate; novelty unverified.</strong> PI/NTK/YaRN/LongRoPE rotate in the same planes, so a cache prefilled under config A rewrites to config B by one composite rotation per plane. Caveats: YaRN's logit temperature is not a rotation; the rewritten K is self-consistent with B but the V and hidden states were built under A's attention pattern — end-to-end quality unmeasured; and llama.cpp's K-shift with changed frequency parameters arguably makes this folklore. Cheap experiment, modest paper.</li>
+<li><strong>NoPE multiset structure — Prop 1′ <span class="tag exact">exact</span>, tightly scoped.</strong> At a NoPE layer with no positional logit term, no length-dependent temperature, and the mask given by set membership, the attention output depends on the visible rows only as a multiset. Scope: (a) mask-preserving permutations only — appending or interleaving <em>new</em> tokens has real order semantics via the intra-batch causal mask; (b) exact in exact arithmetic, ~1e-3 relative in f16 online softmax (row order changes the block partition), so a permuted cache is RECONCILED, never EXACT, under the seal regime; (c) <strong>licenses mechanics, not quality</strong> — the engine won't misindex; nothing says the distribution matches a joint prefill. The tension to resolve empirically: implicit position lives in the <em>content</em> (hidden variance decreases with position — 2203.16634, 2404.12224, 2509.21042), so after a splice both segments' rows still encode "I begin at 0" — the duplicate-sink pathology replayed in the implicit-position channel. If real, the predicted fix is an <strong>affine offset in feature space</strong>, not row surgery (E1).</li>
+<li><strong>Linear/SSM scan composition <span class="tag exact">exact</span> for LTI only.</strong> S(A·B) = Λ(B)·S(A) + S(B) holds with Λ computable from B alone for <em>fixed-decay</em> recurrences (S4/S5, RetNet). For the gated variants the industry ships (GDN, Mamba-2, GLA, RWKV-6/7), Λ(B) = Π&nbsp;diag(α<sub>t</sub>) with α<sub>t</sub> a function of B's <em>contextualized</em> inputs — computable from B alone at layer 0 only. <strong>For gated hybrids, contextualization contaminates the mechanics term itself</strong>: the mechanics/contextualization factorization that holds cleanly for attention degrades here. Consistent with the measured caution (naive recurrent-state composition: 46.6% of full quality; single-state re-init recovers 86.8% — LinearKV 2608.11231). Engineering notes for an executable algebra: ship the conv1d boundary tokens (kernel_width−1), and keep Λ in log space (a product of sub-unit decays underflows f16).</li>
+<li><strong>Gauge freedom <span class="tag exact">exact</span> — and QK-norm collapses it to Procrustes.</strong> Per head, logits are invariant under K→KA, Q→QA<sup>−⊤</sup> (V→VB with W<sub>O</sub> absorbing B<sup>−1</sup>): a cache is defined only up to a per-head gauge. <strong>KV-space reconstruction error is not gauge-invariant — the exact reason it fails to predict transfer quality; attention outputs are gauge-invariant.</strong> With per-head QK-RMSNorm (Muse: K-norm weight exactly 1.0, verified in the engine), the QK-side gauge group collapses from GL(d) to <strong>O(d)</strong> — an orthogonal-Procrustes-constrained mapper is not a heuristic but the <em>exact residual symmetry</em> of the QK side (the V side keeps GL). Bonus engine fact: with QK-norm and the folded scale, Muse attention logits are exactly ≈43.8·cos(q,k), bounded — cosine acceptance gates are dimensionally native and calibration-free, and cached K rows have per-head RMS exactly 1 (magnitude drift is architecturally impossible here).</li>
+</ol>
+<p>Framing result on the headroom: <strong>MLA caches ~2% of MHA-equivalent bytes with no loss — chosen at training time</strong> (2405.04434). Post-hoc SVD tops out ~2×, and naive rank reduction loses to quantization everywhere tested (rank-32 → LAMBADA 0.4%, 2604.11501) — §3 derives why.</p>
+
+<div class="tablewrap"><table>
+<caption>The architecture taxonomy — each family = its exact mechanics + the shared obstacle. The algebra is per-layer, not per-model: Muse's is a 52-vector (39 × window_truncate+reanchor, 13 × multiset_union).</caption>
+<thead><tr><th>Family</th><th>Position action on cached K</th><th>Growing planes</th><th>Exact composition mechanic</th><th>Caveat</th></tr></thead>
+<tbody>
+<tr><td>Dense RoPE (Llama/Qwen)</td><td>R(Δ), all layers</td><td>all</td><td>re-anchor + append</td><td>YaRN/NTK models: scale factor is length-dependent; temperature term is not a rotation</td></tr>
+<tr><td>SWA + global-RoPE (Gemma-2/3)</td><td>R(Δ) on global planes</td><td>global only</td><td>re-anchor global; SWA tail bounded</td><td>—</td></tr>
+<tr><td>SWA + NoPE (Muse / Command&nbsp;A / SmolLM3 / Llama-4-iRoPE)</td><td>none on growing planes</td><td>13 NoPE planes</td><td>multiset append (Prop 1′ scope)</td><td>implicit position in values, unmeasured</td></tr>
+<tr><td>MLA (DeepSeek)</td><td>thin 64-dim k_R channel</td><td>latent c_i</td><td>latent append; rotate k_R (Irminsul 2605.05696 ships this)</td><td>—</td></tr>
+<tr><td>ALiBi / bias</td><td>none (score-time bias)</td><td>all</td><td>re-indexing — and the inter-segment <em>gap</em> is a free per-segment log-prior on attention mass: an exact, explicit β knob (APE's scaling, for free)</td><td>ecosystem faded</td></tr>
+<tr><td>Gated linear/SSM hybrids</td><td>n/a (state)</td><td>recurrent state</td><td>scan compose — <strong>LTI only</strong>; gated Λ needs contextualized inputs</td><td>mechanics and contextualization entangled</td></tr>
+</tbody></table></div>
+<p>Missing from the table's axes on purpose: sink/normalization structure — the #1 and #2 measured barriers — is family-universal, which is why the repair toolbox (§4) is shared.</p>
+<div class="callout"><p><strong>kvpack implication.</strong> Promote the per-layer valid-transformation vector — <code>reanchor(Δ) | permute | window_truncate | scan_compose | reindex</code> with parameters (pairing convention, freq base and scaling type, decay parameterization, conv boundary width) — from implicit identity metadata to an executable <code>cache_algebra</code> manifest field. kvpack already carries ~80% as identity material (<code>RepresentationFamilyId</code>, <code>TokenAxisRule</code>, <code>rotation.rs</code>, <code>mla-latent</code>). One composition engine then serves every family. Validity metadata must hash the full non-weight surface too: RoPE base/scaling, window pattern and NoPE polarity (muser's config notes bad converters get <code>sliding_window_pattern</code> wrong — and <code>rope_base_full</code> is parsed but unused today), attention scale, softcap, QK-norm params, numeric format.</p></div>
+
+<h2 id="breaks"><span class="no">3</span>What actually breaks — with the accounting stated up front</h2>
+<div class="callout"><p><strong>The exact-composition accounting <span class="tag exact">exact</span>.</strong> Q is never cached. Cross-segment coupling at mixing layer ℓ needs B's queries at ℓ, i.e. B's hidden states at ℓ, i.e. B's forward pass conditioned on A up to ℓ. At the first mixing layer that is cheap (Muse: layers 0–2 are SWA, so the first cross-segment-relevant layer is NoPE layer 3 — three layers of B ≈ 6% of a prefill plus one |B|×|A| QK pass). At all higher layers it is the joint prefill you were avoiding. Hence: exact composition of B onto A costs a full prefill of B in A's context; the only exactly reusable non-prefix object is a read. All economics run on the approximate path.</p></div>
+<p><strong>The error object.</strong> Δ = KV(B|A) − KV(B|∅). Layer-1 Δ = 0 exactly. Per layer, the exact merge identity o′ = (1−β)o<sub>B</sub> + β·ō<sub>A</sub>(q) splits the damage into a scalar attenuation and an additive injection, which yields three <em>derivations</em> of measured results:</p>
+<ul>
+<li><strong>Why quantization beats rank reduction <span class="tag derived">derived</span>.</strong> Through the softmax Jacobian (∂p/∂z = diag(p) − pp<sup>⊤</sup>): independent per-row errors (quantization) concentrate as √(Σp<sub>i</sub>²) — small under diffuse attention; errors <em>shared across rows</em> (low-rank truncation) add coherently as Σp<sub>i</sub> = O(1). Exactly the measured dominance (2604.11501).</li>
+<li><strong>Why the deficit is token-diffuse and feature-low-rank <span class="tag derived">derived</span>.</strong> The injected term β<sub>i</sub>·ō<sub>A</sub>(q<sub>i</sub>) lives in span(V<sub>A</sub>) — low-rank in features, spread over tokens. That is Kamera's headline finding (rank-64 patch recovers 97% of answer flips; token recompute caps at 36%), predicted by the algebra. Family-2 repair is the theoretically favored primitive.</li>
+<li><strong>Why temperature+scale recovers so much, and where it stops <span class="tag derived">derived</span>.</strong> A splice has two sinks where a joint prefill has one. At Command A's measured 0.33 NoPE sink mass, merged sink mass ≈ 0.5–0.66 vs the true 0.33: a near-uniform ~40% attenuation of content-carrying mass at every NoPE layer — a scalar error, exactly what APE's temperature+scale removes (98% RAG recovery, zero recompute) — while the residual <em>content</em> injection is what it cannot remove (the collapse to ~34% on multi-value retrieval).</li>
+</ul>
+<p><strong>Barriers ranked by evidence <span class="tag meas">meas</span>:</strong></p>
+<ol>
+<li>Missing cross-segment conditioning — universal 7–18 F1 deficit on multi-hop QA across 11 systems and 3 models (2603.20218).</li>
+<li>Duplicate sinks at segment starts — 4 independent groups; sinks are structural (softmax simplex necessity 2603.11487; over-mixing control 2504.02732). Fixes that work: one shared sink prefix deduplicated at splice; recompute a constant handful of chunk-initial tokens; trained header tokens.</li>
+<li>Softmax calibration — the derived attenuation above; temperature control on full-attention layers is mandatory equipment; NoPE layers have no distance decay to protect them when the support widens (entropy inflection, 2404.12224).</li>
+<li>Magnitude drift — measured elsewhere (key norms grow with position, APE); <strong>architecturally absent under per-head QK-norm</strong> (Muse: cached K rows have RMS exactly 1).</li>
+<li>Implicit position in "position-free" layers — robustly probed, never isolated for splicing; E1 decides. Prediction registered now: after a splice, both segments' rows probe as "I begin at 0," and the fix is a learned affine offset in feature space.</li>
+</ol>
+<p><strong>The recompute-fraction ledger</strong> (quote no number without a task-interdependence qualifier): ~0–2% (self-contained chunks — EPIC regime) · ~15% (loosely coupled RAG QA, F1/Rouge — CacheBlend regime, never independently replicated) · ~30% (production RAG — Cache-Craft, with a per-chunk predictor) · 70–100%-or-retrain (aggregation, multi-key, cross-chunk binding — CacheClip). Non-monotonic hazard: 20–60% ratios can fragment multi-token entities and score worse than either extreme.</p>
+<p><strong>Framing challenges (build the instrument first):</strong> mean perplexity dilutes splice damage on a 30-token answer by ~10³, and the damage is <em>selectively relational</em> (cross-boundary coreference, compare, contradict, attribute) — no standard benchmark isolates it (E0). A spliced cache is exactly Fusion-in-Decoder — a known-good architecture — so monolithic prefill is a chosen reference, not ground truth; test whether spliced-no-repair ever <em>beats</em> monolithic (it eliminates lost-in-the-middle by construction). And every published multi-request PIC eval runs synthetic streams against unoptimized baselines — the honest bar is scheduled prefix caching + reordering (97.5% of oracle from reordering alone — 2606.19667, an unrelated system that happens to be named "CacheWeaver") and muser's own disagg lane (E0b).</p>
+
+<h2 id="toolbox"><span class="no">4</span>The repair toolbox (family-independent by construction)</h2>
+<p>Every mechanism operates on the shared obstacle, never on position mechanics. Evidence direction: families 0–3 were validated on dense-RoPE models — the hardest-mechanics common case — and transfer toward SWA+NoPE/MLA with the mechanics load removed.</p>
+<ul>
+<li><strong>Family 0 — distributional (zero recompute):</strong> one shared sink prefix (deduplicated at splice), temperature/scale on full-attention layers (§3 derives why this floor is high), positions locally exact + globally monotone (the decode-side remapping literature — Self-Extend, DCA, ReRoPE — licenses the query lying about distance under exactly those two constraints). Floor ~93–98% on retrieval-shaped tasks; collapses on cross-chunk binding.</li>
+<li><strong>Family 1 — token-sparse recompute:</strong> select by cross-segment attention mass β at the first mixing layer (LSE sidecar + 3 layers of B + one QK pass — cheap, §2.1), recompute in ≥8-token windows (entity-fragmentation guard). A 135M auxiliary model's last-layer attention is a measurably better selector than the big model's own layer 1 (CacheClip) — replicate. Scope honestly: β above the first mixing layer is an estimator; and <em>precomputed pairwise</em> repair artifacts are quadratic in library size — they exist only for a <strong>fixed-A regime</strong> (system prompts, agent scaffolds, tool descriptions) or curated bundles.</li>
+<li><strong>Family 2 — feature-space low-rank patch (the linker), theoretically favored (§3):</strong> the injection lives in span(V<sub>A</sub>); a precomputed rank-r patch GEMM'd into the cache recovers 97% where token recompute caps at 36% (Kamera, multimodal — <strong>text is open</strong>). Each segment exports a rank-r sketch of its (K,V) measure; compose = one cheap attention against the sketch + patch. Same fixed-A/bundle scoping as Family 1. Breakeven ≈ 9 reuses in Kamera's accounting.</li>
+<li><strong>Family 3 — trained tolerance (the quality ceiling):</strong> fine-tune to accept independently encoded blocks (Block-Attention/TurboRAG: parity at −98.7% TTFT; KVLink +4% over best training-free; Prompt Choreography for agents). Costs weight access, re-tuning per release, and changes the model identity — hence every kvpack cache identity: v0.2+ for muser. Cheap entry: LoRA context-dropout splice-robustness tune.</li>
+</ul>
+<div class="callout"><p><strong>Acceptance gates (the honesty layer).</strong> Two regimes, because first-order sensitivity vanishes exactly where routing flips live. <em>Diffuse heads</em> (p<sub>max</sub> &lt; τ): first-order bound in the centered metric — Cov<sub>q</sub>(q), not E[qq<sup>⊤</sup>] (the mean query direction produces uniform logit shifts, which the softmax Jacobian annihilates — and value-centered: key error on rows whose value ≈ the attention mean is free). <em>Peaked heads</em> (p<sub>max</sub> ≥ τ — the ~5% retrieval heads, which in RNoPE-class models live in the NoPE layers): a <strong>margin criterion</strong> — does the perturbation preserve top-k logit order? On QK-normed engines this is native cosine units (Muse: one logit unit = 0.023 cosine).</p>
+<p>Gate composed caches on per-layer attention-output agreement over a probe set + final-logit KL; never on KV-space error, which is not even gauge-invariant (§2.6). This slots into the cacheweaver invariant — composed caches are <strong>RECONCILED, never EXACT</strong>, admitted on measured evidence, full-prefill fallback on gate failure — and VeriCache-style lazy verification (decode speculatively, verify against ground truth computed off the TTFT path) upgrades RECONCILED to verified-exact after the fact.</p></div>
+
+<h2 id="crossmodel"><span class="no">5</span>Cross-model and synthesized caches: proven vs vibes</h2>
+<p><strong>Proven (≥2 groups or deployed):</strong> same-model position-shifted reuse + selective recompute (CacheBlend lineage); same-architecture fine-tune pairs with layer-selective recompute (DroidSpeak ~3.1× — and its killer negative: naive full reuse between a base model and its own instruct tune collapses to base-model quality); exact-by-construction reuse (activated-LoRA: base KV exactly valid, up to 100× TTFT; PrefillShare/ICaRus: frozen prefill module + specialized decode, within 1% of full fine-tuning); hidden states as transfer currency (HCache ≥6× restore; KV exactly reconstructible from the residual stream in pre-norm transformers — 2603.19664, ≤4B, sliding-window breaks it; note the direction: X→KV is trivial, KV→X is impossible — 256 dims per layer cannot recover 6656); cross-scale attention-<em>map</em> similarity (IAM/SmallKV/SpecPrefill).</p>
+<p><strong>Promising, single-source:</strong> NVIDIA closed-form mapper (97.6% retention Qwen3 14B→32B; mapper 1–3.4B params / 4–12&nbsp;GB per direction-pair; 2/6 pairs fail, no a-priori predictor, no code); C2C fusers (peer-reviewed, toy receivers); Apple KV Prediction (the honest small→large synthesis number: 61–66% retention at ~2× FLOPs).</p>
+<p><strong>Vibes:</strong> "cross-model transfer works" unqualified; "low-rank structure → low-rank transfer" (§3 derives the failure); "negligible loss" on F1/Rouge only (judge workloads silently diverge decisions at stable end-task metrics — 2601.08343).</p>
+<p><strong>Unpublished directions worth owning:</strong> (1) fit mappers in the gauge-invariant/centered metric instead of MSE — under QK-norm the QK-side map is <em>provably</em> orthogonal, so Procrustes is derivable, not heuristic; (2) residual-stream transfer — its merit is <strong>self-consistency</strong> (the target manufactures K/V with its own W<sub>K</sub>/W<sub>V</sub>, staying on-manifold), <em>not</em> cost: per-layer h-maps are d_model² (≈4.4e7 params/layer at 6656) and infeasible at restore bandwidth, whereas per-plane KV-space maps are d_kv² (256² — ~3.4&nbsp;MB total for a Muse-class model) and trivial; (3) head-function-aware budgets — recompute the ~5% retrieval heads exactly, map the rest; (4) factored mappers to collapse the 4–12&nbsp;GB sidecar (a 13&nbsp;MB adapter already works for the communication use case — LCF).</p>
+<div class="callout"><p><strong>Cache validity under weight updates — the corrected theorem and the loophole.</strong> A cache stays exactly valid iff the update touches nothing in the <strong>causal cone</strong> of any cached K/V: all weights strictly below the deepest cached layer, plus W<sub>K</sub>, W<sub>V</sub>, <em>and the QK-norm parameters and qk-scale</em> at cached layers. Outside the cone: lm_head, final norm, <strong>and the entire post-KV part of the deepest layer — W<sub>O</sub>, MLP, attention gate, post-attention norms</strong>. Consequences:</p>
+<ul>
+<li><strong>Release policy beats migration research:</strong> restrict fine-tune updates to the top of the cone and every shipped cache stays exactly valid — the appliance survives model releases with zero migration. (Check embedding/lm_head tying first; tied weights make "lm_head only" the empty set. Embedding updates invalidate everything.)</li>
+<li>"Caches survive LoRA" is <strong>exactly false, approximately open</strong>: with GQA, W<sub>K</sub>/W<sub>V</sub> are a fraction of a percent of layer params, so a generic attention LoRA almost surely touches W<sub>Q</sub>/W<sub>O</sub> — in the cone. Whether stale caches pass the gate anyway is empirical: <strong>run the unmigrated null first</strong> (an afternoon; often kills the need for any mapper).</li>
+<li>Migration mappers, properly costed: they must be O(r·d_kv) per plane and run at ≥ restore bandwidth. Per-plane linear maps for a Muse-class model: ~3.4&nbsp;MB f16 total, &lt;1 TFLOPS at restore rate — feasible; per-layer residual maps are not. NVIDIA's mappers are huge because they cross <em>different</em> representation geometries; consecutive checkpoints of one model should need Procrustes-on-K + linear-on-V (8k params/head). Library migration economics: rewriting 60&nbsp;TB ≈ 11&nbsp;h at 3&nbsp;GB/s vs ~250&nbsp;h to re-prefill — ~20×, not 10³.</li>
+</ul></div>
+<p><strong>The third cost model — trained caches:</strong> Cartridges (2506.06266): train a per-corpus KV "cartridge" offline by self-distillation — ICL-parity at 38.6× less KV memory. Overnight priming as <em>training</em>. The right tool for the truly cold tier; composable with everything above.</p>
+
+<h2 id="programs"><span class="no">6</span>Worked programs per family (kvpack is the substrate; Muse is one row)</h2>
+<p>One composition engine: read <code>cache_algebra</code>, apply exact mechanics, run §4, gate on evidence.</p>
+<p><strong>Dense RoPE (Llama/Qwen — the common case; all the repair literature lives here).</strong> Store pre-RoPE or position-0-anchored (kvpack <code>canonical-kv-prerope-v2</code>; FlashInfer proves fused rotate-at-read is free) → natively position-free caches. Composition = re-anchor + shared sink + boundary repair + temperature. All planes grow: 100&nbsp;TB ≈ 780M tokens (8B) / ~310M (70B) — the appliance holds a hot working set, not a corpus; Cartridge/cold tiers matter most here. Frequency surgery (§2.3) = "your cache survives the context-window upgrade," pending the end-to-end measurement and a novelty check.</p>
+<p><strong>SWA + global-RoPE (Gemma-2/3 class).</strong> As dense RoPE, but only global planes grow — kvpack's v2 layout tables (<code>window_tokens</code>) already express the split.</p>
+<p><strong>MLA (DeepSeek class).</strong> Latent is position-free; only the 64-dim k_R channel rotates. Muse-grade easy composition at the best capacity-per-token in the zoo (~2–4&nbsp;KB/token). Irminsul (2605.05696) already ships non-prefix MLA reuse. kvpack's <code>mla-latent</code> class is the container.</p>
+<p><strong>Gated linear/SSM hybrids (GDN + attention).</strong> Honest v1: cache attention planes per the rules above; checkpoint recurrent state at exact-prefix cuts only; treat cross-segment state composition as open research (§2.5 — the factorization itself degrades; LTI-only exactness; log-space decays; conv boundary tokens).</p>
+<p><strong>ALiBi.</strong> Position-free bytes plus an explicit exact β knob (the inter-segment gap as a per-segment log-prior). No ecosystem demand; the row proves the abstraction.</p>
+
+<h3>The Muse program (RNoPE-SWA row, worked in full)</h3>
+<p>Structural claims, adversarially corrected:</p>
+<ul>
+<li><strong>A′ <span class="tag exact">exact</span> — the storage claim:</strong> no SWA row older than W = 2048 is ever <em>read</em> at decode. Stored long-range cache = the 13 NoPE planes (13.3&nbsp;KB/token); SWA storage is bounded at 39·2048·1024&nbsp;B ≈ 82&nbsp;MB regardless of context. Corroborated at the attention level: needle mass concentrates in NoPE layers; SWA near-zero at range (Command A analysis).</li>
+<li><strong>A″ — retired.</strong> "Long-range influence flows exclusively through NoPE planes" is false as an influence claim: information injected at a NoPE layer propagates into subsequent tokens' SWA rows; the composed SWA receptive field is 39·W ≈ 80k tokens. Correct statement: <strong>Δ is injected only at NoPE layers but carried by all layers.</strong> SWA rows are discardable because they are never read at range (the mask), not because they are context-free.</li>
+<li><strong>Free win, previously unclaimed:</strong> at 131k context, NoPE-only decode reads 1.74&nbsp;GB of KV per token vs 6.9&nbsp;GB for a full 52-plane cache — RNoPE is a <strong>~4× decode-bandwidth win at range</strong>, on top of the storage win.</li>
+<li><strong>The SWA warm-up, costed honestly (corrected — this changes the engineering priority).</strong> Exact tail reconstruction requires re-prefilling min(N,&nbsp;39·W) ≈ 80k tokens — ~72% of a full 131k prefill. The <em>approximate</em> W = 2048 warm-up costs ~1.9% of a prefill ≈ 5–9&nbsp;s on M3 Ultra-class compute — which <strong>dominates the ~0.6&nbsp;s restore by ~10×</strong>; complexity is O(W·d²·L) + O(W·N·d_kv·L_NoPE): effectively O(W) only below N ≈ 280k (inside Muse's cap, so the claim survives in weakened form). And the reason to recompute the tail is <strong>validity</strong> (an isolated segment's tail is wrong for any composition where it isn't first), not the 82&nbsp;MB: storing a valid tail is strictly better whenever one exists. Product consequence: <strong>memoize compositions, not documents</strong> — 82&nbsp;MB per hot bundle is nothing (materialized-view selection under a byte budget is submodular; lazy greedy gives the (1−1/e) guarantee).</li>
+<li>Composition mechanics: concatenate NoPE multisets (Prop 1′ scope) + one shared sink + temperature on the 13 layers + β-guided boundary repair at layer 3 + warm-up per above. Repair effort concentrates in 13 layers; E0c tests whether it concentrates further in the <em>early</em> NoPE layers (residual-norm growth predicts ‖Δ‖/‖x‖ falls with depth).</li>
+</ul>
+<p><strong>Appliance design sketch (favorable branches, each labeled):</strong> NoPE-only packs [A′, <span class="tag exact">exact</span>] · 4-bit KIVI <span class="tag meas">meas</span> with dithering <span class="tag hyp">hyp</span> — falsifiable signature: the advantage should grow with context length · Cov<sub>q</sub>-shaped bit allocation <span class="tag hyp">hyp</span> — do <strong>not</strong> stack rank projection on quantization (§3 derives why; the "~1.5&nbsp;KB/token → ~65B tokens" endpoint is <span class="tag hyp">hyp</span>, not a design point) · content-defined-chunk Merkle keying for dedup beyond prefixes <span class="tag hyp">hyp</span> — dies if E4's blast radius is unbounded; at NoPE layers a <em>flat</em> raw-ΔKV profile is expected, so measure attention-output-weighted deltas · LSE sidecar [<span class="tag exact">exact</span> at first NoPE layer] · three tiers: exact hot / multipole-summary warm (random-feature moments per cold doc; error multiplied by the small external mass) / Cartridge cold. kvpack is the identity substrate; cacheweaver's provenance regime is the admission law; <code>cache_algebra</code> (§2) makes the engine model-generic.</p>
+<div class="callout"><p><strong>What this gives the launch story:</strong> kvpack as the composition substrate — exact per-family mechanics, measured-evidence admission, RECONCILED provenance, lazy verification to exact, and a release policy (top-of-cone fine-tuning) under which shipped caches survive model updates. Nobody ships that.</p></div>
+
+<h2 id="ledger"><span class="no">7</span>The claim ledger (widely cited, nobody proved)</h2>
+<ol class="ledger">
+<li>"15% recompute recovers full quality" — regime-bound; 70–90% on RULER multi-key; non-monotonic entity corruption between; never independently replicated even at home.</li>
+<li>"CAG replaces RAG" — toy KBs, BERTScore, loses its own largest-KB row.</li>
+<li>"LLMs tolerate discontinuous positions without quality loss" — true for weakly interacting modules; the repair literature exists because it is false in general.</li>
+<li>"98% of sequential performance" (APE) — collapses to ~34% on multi-value retrieval; §3 derives both the success and the collapse.</li>
+<li>"Chunk-start sinks are THE problem" (EPIC) — partial; contradicted by the diffuse-deficit measurement (Kamera); no adjudicating text experiment exists.</li>
+<li>"500× prompt compression" — at 62–73% retained QA, a number rarely quoted with it.</li>
+<li>All TTFT speedups measured against unoptimized prefill — never against scheduled prefix caching + chunked prefill, never against a disagg lane (E0b is our answer).</li>
+<li>"Caches survive LoRA" — exactly false (causal cone); approximately open (run the null).</li>
+</ol>
+<p><strong>Ours, pre-registered as falsifiable (§9):</strong> β-repair needing &gt;40% recompute on multi-key kills Family 1; an uncorrectable implicit-position collision kills NoPE splicing; scheduled prefix caching meeting TTFT targets at realistic sizes kills the <em>latency</em> product (leaving the insurance product).</p>
+
+<h2 id="bets"><span class="no">8</span>Frontier bets, ranked (post-review)</h2>
+<p>All bets except #2 are family-generic.</p>
+<ol>
+<li><strong>The null baseline + relational diagnostic (E0/E0b/E0c).</strong> Cheapest possible falsifiers of the entire program, and the instrument every other result reports into. A program that skips these manufactures its own evidence.</li>
+<li><strong>The RNoPE-SWA splice ablation</strong> (shared sink + boundary recompute + temperature + affine offset arm), scored on the relational diagnostic. Both surveyed open holes point here; we own the ideal engine; Prop 1′ + the sink-attenuation derivation give it a theory to test.</li>
+<li><strong>Feature-space low-rank repair on text</strong> (Kamera replication + the span(V<sub>A</sub>) prediction). If it transfers, the token-recompute debate dissolves and the repair artifact becomes a shippable pack section — scoped to fixed-A/bundle regimes.</li>
+<li><strong>Metric-aware everything</strong> — Cov<sub>q</sub>-shaped quantization/projection, margin gates on peaked heads, Procrustes-constrained mappers (exact under QK-norm). One calibration pass; touches storage, transfer, and admission at once.</li>
+<li><strong>LSE sidecar</strong> — free at prefill, decisive at the first NoPE layer, estimator above it; gives kvpack a principled <code>RepairPlan</code> object. (Demoted from #1 by the review's scoping.)</li>
+<li><strong>Top-of-cone release policy + the unmigrated null</strong> — makes cache-migration research optional; the strongest product story in §5. Residual-stream transfer stays a research bet for its self-consistency property, with the corrected (inverted) cost rationale.</li>
+<li><strong>The corpus-appliance systems paper</strong> — Zipf/Che sizing on real traces, CDC-dedup ratio, verified end-to-end restore throughput, wall-plug joules, break-even reuse counts. The end-to-end result nobody has published; closest to the lab's launch narrative.</li>
+<li><strong>Agent-scaffold KV modules, no fine-tune</strong> — the fixed-A regime par excellence (tool descriptions, scaffolds: near-independent modules, reuse counts in the millions); the easiest unclaimed regime, and the one where Families 1–2's precomputed artifacts are actually well-posed.</li>
+<li><strong>Frequency surgery on rotated caches</strong> — exact transformation, semantically approximate, one kernel + one eval + one novelty check.</li>
+</ol>
+
+<h2 id="week"><span class="no">9</span>The decisive first week (kill-or-fund order, falsifiers pre-registered)</h2>
+<ul>
+<li><strong>E0 — the relational diagnostic (build first).</strong> ~200 items: cross-boundary coreference, A-vs-B comparison, contradiction detection, source attribution — each with monolithic-cache control; report per-category composed/monolithic ratio + answer-span NLL (+ mean PPL only to expose its dilution). Decides the FiD question too: does spliced-no-repair ever beat monolithic?</li>
+<li><strong>E0b — the null-reuse control.</strong> At matched TTFT budget: scheduled prefix caching + chunked prefill on the disagg lane vs retrieve-and-prefill vs no reuse. If prefix caching meets the target, non-prefix composition has no latency economics regardless of the algebra.</li>
+<li><strong>E0c — measure Δ before repairing it.</strong> Joint vs isolated prefill of identical segments; pre-registered predictions: Δ injected at NoPE layers and carried elsewhere; Δ low-rank in feature space (span(V<sub>A</sub>)); ‖Δ‖/‖x‖ decreasing with depth (repair belongs at layers 3, 7, 11).</li>
+<li><strong>E1 — NoPE position-freeness, corrected design.</strong> (i) <em>Suffix-invariance</em>: prefill [doc] vs [doc,&nbsp;filler]; the doc's NoPE rows must be bitwise identical on the CPU oracle (causality) — this, not offset-shifting, is the true no-position-term test; offset-shift confounds contextualization and would fail for the wrong reason. (ii) <em>Prefix-sensitivity</em>: [filler,&nbsp;doc] — nonzero by design; its magnitude IS Δ. (iii) <em>Implicit-position probe</em> with the registered hypothesis: after splicing, B's rows probe to positions 0..|B| ("both documents think they're first"); then test the affine-offset fix directly and re-score on E0.</li>
+<li><strong>E2 — the splice curve.</strong> Two-document compose vs joint prefill; sink dedup as a controlled factor; selectors compared at <strong>equal wall-clock</strong> (β costs 3 layers + a QK pass; CacheBlend's costs layer 1); order control (A·B vs B·A); length-matched monolithic control; <strong>interference control</strong> (splice an irrelevant B, ask A-only questions — the production failure nobody measures); a rank-r feature-patch arm (Kamera-on-text); repair-fraction sweep with the non-monotonic entity-corruption check.</li>
+<li><strong>E3 — SWA warm-up, reframed for validity.</strong> Sweep W ∈ {2k … 80k} (the exactness horizon is 39·W): error vs the 4-bit noise floor, TTFT including warm-up. Expect exactness at ~72% of a prefill and the real question to be how fast error decays below the floor.</li>
+<li><strong>E4 — edit blast radius, measured in the right metric.</strong> Attention-output-weighted ΔKV vs distance and layer (raw ‖ΔKV‖ at NoPE layers is expected flat by construction — pre-register that a flat <em>weighted</em> profile kills the CDC-dedup branch and the incremental-sync story).</li>
+<li><strong>E5 — Cov<sub>q</sub> spectra + gate calibration.</strong> Per-head centered query covariance; effective rank; cross-domain stability (instability → per-domain calibration); validate the two-regime gate on our engine.</li>
+<li><strong>E6 — the economics receipts.</strong> <em>Verified</em> end-to-end restore throughput (MAC included); TTFT including warm-up; wall-plug joules/token prefill vs restore (converts the <code>mock</code> field); Zipf fit + Che sizing; <strong>break-even reuse count</strong> as the headline, not bandwidth.</li>
+<li><strong>E7 — cross-family calibration.</strong> Run E0+E2 on a dense-RoPE model (Qwen-class; kvpack already pins its rotation tables) with pre-RoPE storage + re-anchoring: anchors our results to the literature's home regime and proves the <code>cache_algebra</code> engine is model-generic.</li>
+</ul>
+<p>Family scope: E0, E0b, E0c, E2, E4, E5, E6 are family-generic; E1, E3 are the RNoPE-specific branches; E7 is the generalization control. Everything else (multipole tier, dithering, Rao-Blackwellized caches, linker tokens, materialized-view selection, percolation-shaped repair) branches off these results.</p>
+
+<h2 id="refs"><span class="no">10</span>Reference index (arXiv IDs)</h2>
+<p class="refs"><strong>Theory/structure:</strong> <span class="mono">2501.12352</span> (test-time regression) · <span class="mono">2605.20271</span> · <span class="mono">2102.11174</span> (fast weights) · <span class="mono">2405.21060</span> (SSD) · <span class="mono">2008.02217</span> (Hopfield) · <span class="mono">2402.05099</span> (Hydragen/LSE merge) · <span class="mono">2104.09864</span> (RoPE) · <span class="mono">2604.15356</span> (cache entropy ≤ text entropy) · <span class="mono">2502.15955</span> (Θ(nd) barrier) · <span class="mono">2605.25085</span> (power-law sensitivity / Wyner-Ziv) · <span class="mono">2607.01520</span> (minimax compression risk) · <span class="mono">2604.11501</span> (quantization vs rank; routing flips) · <span class="mono">2512.05916</span> (KQ-SVD) · <span class="mono">2510.00636</span> (Expected Attention) · <span class="mono">2405.04434</span> (MLA) · <span class="mono">2503.18893</span> (xKV) · <span class="mono">2410.03111</span> (LoRC) · <span class="mono">2602.05929</span> (KV-CoRE).<br>
+<strong>Sinks/heads:</strong> <span class="mono">2309.17453</span> (StreamingLLM) · <span class="mono">2410.10781</span> · <span class="mono">2504.02732</span> · <span class="mono">2603.11487</span> (sink necessity) · <span class="mono">2402.17762</span> · <span class="mono">2512.22213</span> (secondary sinks) · <span class="mono">2404.15574</span> (retrieval heads) · <span class="mono">2410.10819</span> (DuoAttention) · <span class="mono">2406.02069</span> (PyramidKV) · <span class="mono">2406.10774</span> (Quest) · <span class="mono">2602.02579</span> (ProphetKV).<br>
+<strong>Non-prefix systems:</strong> <span class="mono">2405.16444</span> (CacheBlend) · <span class="mono">2410.15332</span> (EPIC) · <span class="mono">2502.15734</span> (Cache-Craft) · <span class="mono">2510.10129</span> (CacheClip) · <span class="mono">2606.23581</span> (Kamera) · <span class="mono">2502.05431</span> (APE) · <span class="mono">2311.04934</span> (PromptCache) · <span class="mono">2409.15355</span> (Block-Attention) · <span class="mono">2410.07590</span> (TurboRAG) · <span class="mono">2502.16002</span> (KVLink) · <span class="mono">2512.23049</span> (Prompt Choreography) · <span class="mono">2412.15605</span> (CAG) · <span class="mono">2506.06266</span> (Cartridges) · <span class="mono">2603.20218</span> (11-system comparison) · <span class="mono">2604.13226</span> (KV Packet) · <span class="mono">2606.19667</span> (reordering "CacheWeaver" — unrelated to our repo) · <span class="mono">2412.10319</span> (SCBench) · <span class="mono">2407.00079</span> (Mooncake) · <span class="mono">2310.07240</span> (CacheGen) · <span class="mono">2404.12457</span> (RAGCache) · <span class="mono">2507.07400</span> (KVFlow) · <span class="mono">2601.08670</span> (PCED) · <span class="mono">2509.01092</span> (REFRAG).<br>
+<strong>Cross-model/synthesized:</strong> <span class="mono">2608.03893</span> (NVIDIA anchor) · <span class="mono">2510.03215</span> (C2C) · <span class="mono">2411.02820</span> (DroidSpeak) · <span class="mono">2601.06123</span> (LatentAlign) · <span class="mono">2605.22863</span> (LCF) · <span class="mono">2507.11953</span> (IAM) · <span class="mono">2508.02751</span> (SmallKV) · <span class="mono">2502.02789</span> (SpecPrefill) · <span class="mono">2410.03960</span> (SwiftKV) · <span class="mono">2410.08391</span> (KV Prediction) · <span class="mono">2405.05254</span> (YOCO) · <span class="mono">2405.12981</span> (CLA) · <span class="mono">2602.12029</span> (PrefillShare) · <span class="mono">2603.13281</span> (ICaRus) · <span class="mono">2512.17910</span> (aLoRA) · <span class="mono">2410.05004</span> (HCache) · <span class="mono">2603.19664</span> (residual stream) · <span class="mono">2605.17613</span> (VeriCache) · <span class="mono">2601.08343</span> (judge divergence) · <span class="mono">2403.05527</span> (GEAR).<br>
+<strong>Positional:</strong> <span class="mono">2401.01325</span> (Self-Extend) · <span class="mono">2402.17463</span> (DCA) · <span class="mono">2308.16137</span> (LM-Infinite) · <span class="mono">2309.00071</span> (YaRN) · <span class="mono">2306.15595</span> (PI) · <span class="mono">2402.13753</span> (LongRoPE) · <span class="mono">2203.16634</span> (Haviv NoPE) · <span class="mono">2305.19466</span> (Kazemnejad) · <span class="mono">2404.12224</span> (variance/entropy) · <span class="mono">2509.21042</span> (Behind RoPE) · <span class="mono">2501.18795</span> (RNoPE-SWA / Command A) · <span class="mono">2503.19786</span> (Gemma 3) · <span class="mono">2605.05696</span> (Irminsul, MLA reuse) · <span class="mono">2608.11231</span> (LinearKV).<br>
+<strong>Quantization:</strong> <span class="mono">2402.02750</span> (KIVI) · <span class="mono">2401.18079</span> (KVQuant) · <span class="mono">2605.06675</span> · <span class="mono">2605.08317</span> · <span class="mono">2608.14191</span>.<br>
+<strong>Engine facts verified in-repo:</strong> d_model 6656, vocab 202048, per-head QK-RMSNorm (K-norm weight 1.0, pre-RoPE, pre-cache), attention scale folded (logits ≈ 43.8·cos), lm-head-only softcap, no RoPE scaling; <code>rope_base_full</code> parsed-unused and <code>sliding_window_pattern</code> converter hazard noted in config.</p>
+
+<footer>High Performance AI Lab · 2026-08-20/21 · Source of record: <span class="mono">muser/docs/kv-reuse-frontier-20260820.md</span></footer>
+</div>
+
+</body>
+</html>
