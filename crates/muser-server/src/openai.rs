@@ -1722,10 +1722,11 @@ pub fn generate_events(
                 let mut route_failures = Vec::new();
                 if let Some(remote) = remote_route {
                     if prompt_witnesses.len() > remote.max_prompt_tokens() {
-                        // Deeper than the lane's measured envelope: the
-                        // producer cannot finish inside the protocol ceiling,
-                        // so the honest route is the local prefill that would
-                        // otherwise serve the timeout's fallback anyway.
+                        // Deeper than this producer's configured envelope —
+                        // set only for producers measured too slow for the
+                        // protocol ceiling. The honest route is the local
+                        // prefill that would otherwise serve the timeout's
+                        // fallback anyway.
                         eprintln!(
                             "muser-server: prompt of {} tokens exceeds the remote prefill depth envelope ({}); prefilling locally",
                             prompt_witnesses.len(),
@@ -2112,9 +2113,9 @@ pub fn generate_events(
         if logits.is_none() && restored_positions.is_none() {
             if let Some(remote) = remote_route {
                 if prompt_witnesses.len() > remote.max_prompt_tokens() {
-                    // Same envelope as the combined-DFlash path: past the
-                    // measured producer rate the remote lane cannot answer
-                    // inside the protocol ceiling; prefill locally instead.
+                    // Same envelope as the combined-DFlash path: only a
+                    // producer configured as too slow for the protocol
+                    // ceiling is skipped; prefill locally instead.
                     eprintln!(
                         "muser-server: prompt of {} tokens exceeds the remote prefill depth envelope ({}); prefilling locally",
                         prompt_witnesses.len(),

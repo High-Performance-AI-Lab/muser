@@ -32,11 +32,14 @@ pub struct ReceiverConfigV2 {
     pub replay_ledger: PathBuf,
     pub timeout_ms: u64,
     pub wait_for_producer_ms: u64,
-    /// Deepest prompt the remote lane will attempt. Beyond this the receiver
-    /// prefills locally: at the measured ~150 ms/token producer rate
-    /// (2026-08-28, GB10 kquant+DFlash), deeper prompts cannot finish inside
-    /// the 900 s protocol ceiling, so attempting them buys a guaranteed
-    /// timeout instead of a transfer.
+    /// Deepest prompt the remote lane will attempt; beyond it the receiver
+    /// prefills locally. Defaults to unlimited: the NVFP4 producer is the
+    /// receipted fast path (130,815 tokens at 137.4 s TTFT vs 570.1 s local,
+    /// 2026-08-22 five-rep receipts) and must never be capped by default.
+    /// Set this only for a producer measured too slow for the 900 s protocol
+    /// ceiling — the kquant cross-vendor exporter (~150 ms/token, 2026-08-28)
+    /// cannot finish past ~4.5k tokens, so its lane configures 4096 and
+    /// deeper prompts take the local lane that has no deadline to blow.
     #[serde(default = "default_remote_max_prompt_tokens")]
     pub remote_max_prompt_tokens: usize,
     #[serde(default)]
@@ -57,7 +60,7 @@ pub struct ReceiverConfigV2 {
 }
 
 fn default_remote_max_prompt_tokens() -> usize {
-    4096
+    usize::MAX
 }
 
 #[derive(Debug, Clone, Deserialize)]
