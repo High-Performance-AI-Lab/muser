@@ -146,8 +146,9 @@ pub struct NodeCommonArgs {
     #[arg(long, value_name = "PATH")]
     pub model_dir: Option<PathBuf>,
 
-    /// Pinned llama.cpp Metal library required by the target's Q6_K
-    /// tensors. May also be supplied as `MUSER_GGML_METALLIB`.
+    /// Override for the pinned llama.cpp Metal library. By default muser
+    /// downloads and verifies the 7 MB release artifact automatically. May
+    /// also be supplied as `MUSER_GGML_METALLIB`.
     #[arg(long, value_name = "PATH")]
     pub ggml_metallib: Option<PathBuf>,
 
@@ -156,9 +157,9 @@ pub struct NodeCommonArgs {
     #[arg(long, value_name = "PATH")]
     pub ggml_metallib_receipt: Option<PathBuf>,
 
-    /// Optional artifact mirror. The native lane otherwise downloads its
-    /// immutable-revision Hugging Face checkpoint and verifies every digest;
-    /// the llama.cpp lane otherwise uses the scp-from-this-Mac fallback.
+    /// Optional artifact mirror. The native lane otherwise downloads its Mac
+    /// consumer chunks plus immutable-revision Hugging Face checkpoint and
+    /// verifies every digest; the llama.cpp lane uses the scp fallback.
     #[arg(long, value_name = "URL")]
     pub model_source_base: Option<String>,
 
@@ -189,10 +190,9 @@ pub struct NodeAddArgs {
     #[arg(long, value_name = "PATH")]
     pub key: Option<PathBuf>,
 
-    /// Producer lane to enroll. The default llama.cpp lane ships combined
-    /// target+DFlash transfers; `native` enrolls the NVFP4 vLLM producer,
-    /// which serves plain decode only. Unset leaves an existing node's lane
-    /// unchanged.
+    /// Producer lane to enroll. Fresh nodes default to the shipped NVFP4
+    /// vLLM `native` lane; `llamacpp` selects the kquant+DFlash research
+    /// lane. Unset leaves an existing node's lane unchanged.
     #[arg(long, value_enum, value_name = "LANE")]
     pub producer: Option<ProducerKind>,
 
@@ -615,7 +615,9 @@ mod tests {
                 other => panic!("expected Node/Add, got {other:?}"),
             }
         };
-        // The default lane is no flag at all: the llama.cpp lane.
+        // A fresh node resolves no flag to native when its registry entry is
+        // created; clap deliberately leaves the option absent here so an
+        // existing node keeps its enrolled lane.
         assert_eq!(parsed(&["muser", "node", "add", "muser@gx10.local"]), None);
         assert_eq!(
             parsed(&[

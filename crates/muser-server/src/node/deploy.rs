@@ -53,6 +53,68 @@ docker pull "$1" >&2
 docker image inspect --format '{{.Id}}' "$1"
 "#;
 
+/// Public-release fallback for nodes that cannot anonymously pull GHCR. Each
+/// chunk is resumable and independently verified before the complete zstd
+/// stream is hashed and admitted to Docker. The final image ID is still the
+/// same immutable identity; the archive is transport, never a second build.
+const LOAD_PINNED_IMAGE_ARCHIVE: &str = r#"set -eu
+lane=$1
+expected_image=$2
+archive_sha=$3
+archive_bytes=$4
+shift 4
+cache="$lane/image-cache"
+list="$cache/archive-parts.list"
+umask 077
+mkdir -p "$cache"
+: > "$list"
+while [ "$#" -ge 4 ]; do
+    name=$1
+    bytes=$2
+    sha=$3
+    url=$4
+    shift 4
+    path="$cache/$name"
+    valid=0
+    if [ -f "$path" ] && [ ! -L "$path" ]; then
+        actual_bytes=$(wc -c < "$path" | tr -d ' ')
+        if [ "$actual_bytes" = "$bytes" ] && printf '%s  %s\n' "$sha" "$path" | sha256sum --check --strict --status; then
+            valid=1
+        fi
+    fi
+    if [ "$valid" -ne 1 ]; then
+        if [ -e "$path" ] && { [ ! -f "$path" ] || [ -L "$path" ]; }; then
+            echo "refusing non-regular image cache path: $path" >&2
+            exit 2
+        fi
+        curl --fail --location --retry 5 --continue-at - --output "$path" "$url" || {
+            rm -f -- "$path"
+            curl --fail --location --retry 5 --output "$path" "$url"
+        }
+        actual_bytes=$(wc -c < "$path" | tr -d ' ')
+        [ "$actual_bytes" = "$bytes" ]
+        printf '%s  %s\n' "$sha" "$path" | sha256sum --check --strict --status
+    fi
+    printf '%s\n' "$path" >> "$list"
+    echo "verified image archive chunk $name"
+done
+[ "$#" -eq 0 ]
+actual_bytes=0
+while IFS= read -r path; do
+    size=$(wc -c < "$path" | tr -d ' ')
+    actual_bytes=$((actual_bytes + size))
+done < "$list"
+[ "$actual_bytes" = "$archive_bytes" ]
+actual_sha=$(while IFS= read -r path; do cat "$path"; done < "$list" | sha256sum | awk '{print $1}')
+[ "$actual_sha" = "$archive_sha" ]
+while IFS= read -r path; do cat "$path"; done < "$list" | zstd -dc | docker load >&2
+loaded=$(docker image inspect --format '{{.Id}}' "$expected_image")
+[ "$loaded" = "$expected_image" ]
+while IFS= read -r path; do rm -f -- "$path"; done < "$list"
+rm -f -- "$list"
+printf '%s\n' "$loaded"
+"#;
+
 const MAKE_LANE: &str = r#"set -eu
 umask 077
 mkdir -p "$1" "$1/llamacpp" "$1/pki" "$1/models" "$1/work"
@@ -281,6 +343,13 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
             "pull the pinned tag only if absent, then require the exact image ID",
             &ssh.argv(&[&identity.image_tag]),
         );
+        ctx.progress.plan(
+            Step::Deploy,
+            &format!(
+                "if the registry pull is unavailable, resume {} public archive chunks and load the same exact image ID",
+                identity.image_archive_parts.len()
+            ),
+        );
         for name in RUNTIME_FILES {
             ctx.progress.plan_command(
                 Step::Deploy,
@@ -321,15 +390,15 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
                 identity.image_tag
             ),
         );
-        let pulled = ssh
-            .run(PULL_PINNED_IMAGE, &[&identity.image_tag])?
-            .trim()
-            .to_string();
-        if pulled != identity.image_id {
-            return Err(format!(
-                "native image tag {} resolved to {pulled}, expected {}; refusing mutable or mismatched runtime",
-                identity.image_tag, identity.image_id
-            ));
+        let pull = ssh.exec(PULL_PINNED_IMAGE, &[&identity.image_tag], None)?;
+        let pulled = pull.stdout.trim();
+        if pull.code != 0 || pulled != identity.image_id {
+            ctx.progress.emit(
+                Step::Deploy,
+                Status::Info,
+                "registry pull unavailable or mismatched; using the pinned public image archive",
+            );
+            load_native_image_archive(ctx, entry, &identity)?;
         }
     } else {
         ctx.progress.emit(
@@ -387,6 +456,43 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     Ok(())
 }
 
+fn load_native_image_archive(
+    ctx: &Ctx,
+    entry: &NodeEntry,
+    identity: &super::artifacts::NativeIdentity,
+) -> Result<()> {
+    let ssh = ctx.ssh(entry)?;
+    let mut args = vec![
+        entry.lane_dir.clone(),
+        identity.image_id.clone(),
+        identity.image_archive.sha256.clone(),
+        identity.image_archive.bytes.to_string(),
+    ];
+    for part in &identity.image_archive_parts {
+        let configured = ctx.model_source(&part.filename);
+        args.extend([
+            part.filename.clone(),
+            part.bytes.to_string(),
+            part.sha256.clone(),
+            if configured.is_empty() {
+                part.url.clone()
+            } else {
+                configured
+            },
+        ]);
+    }
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let relay = |line: &str| ctx.progress.emit(Step::Deploy, Status::Info, line);
+    let output = ssh.run_relayed(LOAD_PINNED_IMAGE_ARCHIVE, &refs, &relay)?;
+    if output.lines().last() != Some(identity.image_id.as_str()) {
+        return Err(format!(
+            "public image archive did not load exact image {}",
+            identity.image_id
+        ));
+    }
+    Ok(())
+}
+
 fn bootstrap(ctx: &Ctx) -> std::path::PathBuf {
     ctx.repo_root
         .join("scripts/gx10")
@@ -423,7 +529,7 @@ fn vllm_package_modules(repo_root: &Path) -> Result<Vec<PathBuf>> {
 /// `build_gx10_container.py` writes its own authenticated receipt; the
 /// pipeline never fabricates one, it just reads back what the builder wrote.
 fn build(ctx: &Ctx, entry: &NodeEntry, receipt: &ContainerReceipt) -> Result<ContainerReceipt> {
-    let output = super::artifacts::receipts_dir().join(format!(
+    let output = super::artifacts::receipts_dir()?.join(format!(
         "gx10-container-{}-{}-{}.json",
         &receipt.source_commit[..7],
         entry.name,
@@ -524,19 +630,21 @@ mod tests {
     }
 
     #[test]
-    fn the_native_lane_mkdir_is_valid_shell() {
-        let mut child = std::process::Command::new("bash")
-            .arg("-n")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        use std::io::Write as _;
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(MAKE_VLLM_LANE.as_bytes())
-            .unwrap();
-        assert!(child.wait().unwrap().success());
+    fn the_native_lane_remote_scripts_are_valid_shell() {
+        for script in [MAKE_VLLM_LANE, LOAD_PINNED_IMAGE_ARCHIVE] {
+            let mut child = std::process::Command::new("bash")
+                .arg("-n")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            use std::io::Write as _;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(script.as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+        }
     }
 }

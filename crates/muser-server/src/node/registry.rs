@@ -95,7 +95,7 @@ pub struct NodeEntry {
     pub lane_dir: String,
     /// The enrolled producer lane. Absent means llama.cpp — every registry
     /// written before the native NVFP4 lane existed — so old files need no
-    /// migration and the default path keeps its exact shape.
+    /// migration. Fresh entries explicitly select the shipped native lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub producer: Option<ProducerKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,7 +135,7 @@ impl NodeEntry {
             lane_dir: lane_dir
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("/home/{user}/.muser/lane/{name}")),
-            producer: None,
+            producer: Some(ProducerKind::Native),
             container_image: None,
             container_receipt: None,
             pki_dir: node_dir(home, name).join("pki").display().to_string(),
@@ -359,17 +359,37 @@ mod tests {
     }
 
     #[test]
-    fn the_producer_lane_defaults_to_llamacpp_and_stays_out_of_the_file() {
+    fn a_fresh_node_explicitly_selects_the_native_release_lane() {
         let home = Path::new("/tmp/muser-registry-test-home");
         let entry = NodeEntry::draft("gx10", "muser", "gx10.local", home, None);
-        assert_eq!(entry.producer_kind(), ProducerKind::Llamacpp);
+        assert_eq!(entry.producer_kind(), ProducerKind::Native);
         let mut registry = Registry::default();
         registry.upsert(entry);
         let text = toml::to_string_pretty(&registry).unwrap();
-        // A llama.cpp lane serializes exactly like a registry from before
-        // the native lane existed: no producer key at all.
-        assert!(!text.contains("producer"));
+        assert!(text.contains("producer = \"native\""));
         let parsed: Registry = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.nodes[0].producer_kind(), ProducerKind::Native);
+    }
+
+    #[test]
+    fn a_legacy_entry_without_a_lane_remains_llamacpp() {
+        let parsed: Registry = toml::from_str(
+            r#"
+[[node]]
+name = "gx10"
+host = "gx10.local"
+user = "muser"
+role = "prefill"
+state = "draft"
+lane_dir = "/home/muser/.muser/lane/gx10"
+pki_dir = "/tmp/pki"
+hmac_key_id = ""
+hmac_epoch = 0
+enrollment_version = 0
+updated = "2026-08-28T00:00:00Z"
+"#,
+        )
+        .unwrap();
         assert_eq!(parsed.nodes[0].producer_kind(), ProducerKind::Llamacpp);
     }
 

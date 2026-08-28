@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-pub const LLAMA_CPP_COMMIT: &str = "89e0aa6fd362617d9073e0dafc18e41241521572";
+pub const LLAMA_CPP_COMMIT: &str = crate::model::LLAMA_CPP_COMMIT;
 
 use super::Result;
 
@@ -170,11 +170,14 @@ struct SealedNativeIdentity {
     checkpoint_receipt_sha256: &'static str,
     image_id: &'static str,
     image_receipt_sha256: &'static str,
+    image_archive_sha256: &'static str,
+    image_archive_parts_sha256: &'static str,
     adapter_sha256: &'static str,
     vllm_commit: &'static str,
     overlay_receipt_sha256: &'static str,
     consumer_sha256: &'static str,
     consumer_receipt_sha256: &'static str,
+    consumer_parts_sha256: &'static str,
     tokenizer_sha256: &'static str,
     chat_template_sha256: &'static str,
     context_policy_sha256: &'static str,
@@ -186,17 +189,20 @@ struct SealedNativeIdentity {
 }
 
 const NATIVE_SEALED: SealedNativeIdentity = SealedNativeIdentity {
-    runtime_identity_sha256: "59a7e8c919745711d2af537f391e799c48d20148a7e1ecd8c9d7b7a87cf9102e",
+    runtime_identity_sha256: "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264",
     checkpoint_revision: "d5109a1d187c27bd1734e81844e71aa4d964e66a",
     checkpoint_artifact_sha256: "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
     checkpoint_receipt_sha256: "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa",
-    image_id: "sha256:578888b29e42138a0821b68f94d952a4acc958660232e53d3ebff3ae9d933750",
-    image_receipt_sha256: "163783f1f98ae341fc2425409e885b886e54a4274468a263c4476939e3327e45",
-    adapter_sha256: "c49c171ffdeaa34fcff5a9be80af3256be245ed81902ce35d97cc825e197d1f7",
+    image_id: "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    image_receipt_sha256: "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6",
+    image_archive_sha256: "eff84d1d6af33c7bd4bff1cb2ae4129f79bf3dab2cfd64b62f93efcad348a2fa",
+    image_archive_parts_sha256: "ca0df6b517edbc8e2cc353c395bd855a5f50998cc16667d663b1b717517ba294",
+    adapter_sha256: "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
     vllm_commit: "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    overlay_receipt_sha256: "695f9ad0941181123b1bdc4eaea4db2f2249f7a18fd45217c92b328652b45e68",
+    overlay_receipt_sha256: "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2",
     consumer_sha256: "dc9865ef9770324b1b5d7bdebc7fc6b2c9fb125084fe2461b6f5168c552193b1",
     consumer_receipt_sha256: "ccac21c54d765f62f15acf0c496b946cd129db5f6ca5f026be13cd5705e9da21",
+    consumer_parts_sha256: "8a5568ceeab6cd775e6394dcae2723d9b2f0b2e449214389d01e8b8e09ed72d9",
     tokenizer_sha256: "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
     chat_template_sha256: "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
     context_policy_sha256: "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",
@@ -236,6 +242,17 @@ struct NativeProducerImage {
     image_id: String,
     receipt: String,
     receipt_sha256: String,
+    archive: NativeProducerArchive,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeProducerArchive {
+    filename: String,
+    compression: String,
+    bytes: u64,
+    sha256: String,
+    parts: Vec<NativeReleasePart>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -253,12 +270,74 @@ struct NativeConsumer {
     filename: String,
     bytes: u64,
     sha256: String,
+    parts: Vec<NativeReleasePart>,
     tokenizer_sha256: String,
     chat_template_sha256: String,
     context_policy_sha256: String,
     target_cache_identity_sha256: String,
     repack_receipt: String,
     repack_receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeReleasePart {
+    filename: String,
+    bytes: u64,
+    sha256: String,
+    url: String,
+}
+
+const NATIVE_RELEASE_ASSET_BASE: &str =
+    "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1";
+
+fn pinned_release_parts(
+    filename: &str,
+    expected_bytes: u64,
+    expected_root: &str,
+    revision: &str,
+    parts: &[NativeReleasePart],
+) -> Result<Vec<Artifact>> {
+    let mut total = 0_u64;
+    let mut root = Sha256::new();
+    let mut pinned = Vec::with_capacity(parts.len());
+    for (index, part) in parts.iter().enumerate() {
+        let expected_name = format!("{filename}.part-{index:02}");
+        let expected_url = format!("{NATIVE_RELEASE_ASSET_BASE}/{expected_name}");
+        validate_sha256("native release part", &part.sha256)?;
+        if part.filename != expected_name
+            || part.url != expected_url
+            || part.bytes == 0
+            || part.bytes >= 2 * 1024 * 1024 * 1024
+        {
+            return Err("native release multipart manifest is unsafe or out of order".into());
+        }
+        total = total
+            .checked_add(part.bytes)
+            .ok_or_else(|| "native release multipart byte count overflow".to_string())?;
+        root.update(part.filename.as_bytes());
+        root.update([0]);
+        root.update(part.bytes.to_string().as_bytes());
+        root.update([0]);
+        root.update(part.sha256.as_bytes());
+        root.update([0]);
+        root.update(part.url.as_bytes());
+        root.update(b"\n");
+        pinned.push(Artifact {
+            filename: part.filename.clone(),
+            revision: revision.into(),
+            url: part.url.clone(),
+            bytes: part.bytes,
+            sha256: part.sha256.clone(),
+        });
+    }
+    if pinned.is_empty()
+        || total != expected_bytes
+        || format!("{:x}", root.finalize()) != expected_root
+    {
+        return Err("native release multipart manifest differs from its pinned root".into());
+    }
+    Ok(pinned)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -322,9 +401,12 @@ pub struct NativeIdentity {
     pub checkpoint_files: Vec<NativeCheckpointFile>,
     pub image_tag: String,
     pub image_id: String,
+    pub image_archive: Artifact,
+    pub image_archive_parts: Vec<Artifact>,
     pub adapter_sha256: String,
     pub vllm_commit: String,
     pub consumer: Artifact,
+    pub consumer_parts: Vec<Artifact>,
     pub tokenizer_sha256: String,
     pub chat_template_sha256: String,
     pub context_policy_sha256: String,
@@ -348,6 +430,7 @@ impl NativeIdentity {
 
         let checkpoint = &file.checkpoint;
         let producer = &file.producer_image;
+        let image_archive = &producer.archive;
         let overlay = &file.vllm_overlay;
         let consumer = &file.consumer;
         let rope_cache = &file.rope_cache;
@@ -359,6 +442,7 @@ impl NativeIdentity {
                 checkpoint.runtime_receipt_sha256.as_str(),
             ),
             ("producer receipt", producer.receipt_sha256.as_str()),
+            ("producer image archive", image_archive.sha256.as_str()),
             ("adapter", overlay.adapter_sha256.as_str()),
             ("overlay receipt", overlay.receipt_sha256.as_str()),
             ("consumer", consumer.sha256.as_str()),
@@ -401,6 +485,7 @@ impl NativeIdentity {
             || checkpoint.runtime_receipt_sha256 != NATIVE_SEALED.checkpoint_receipt_sha256
             || producer.image_id != NATIVE_SEALED.image_id
             || producer.receipt_sha256 != NATIVE_SEALED.image_receipt_sha256
+            || image_archive.sha256 != NATIVE_SEALED.image_archive_sha256
             || overlay.adapter_sha256 != NATIVE_SEALED.adapter_sha256
             || overlay.vllm_commit != NATIVE_SEALED.vllm_commit
             || overlay.receipt_sha256 != NATIVE_SEALED.overlay_receipt_sha256
@@ -421,6 +506,10 @@ impl NativeIdentity {
         if checkpoint.runtime_receipt.is_empty()
             || producer.tag.is_empty()
             || producer.receipt.is_empty()
+            || image_archive.filename.is_empty()
+            || image_archive.filename.contains('/')
+            || image_archive.compression != "zstd"
+            || image_archive.bytes == 0
             || overlay.receipt.is_empty()
             || consumer.repack_receipt.is_empty()
             || checkpoint.directory.is_empty()
@@ -469,6 +558,21 @@ impl NativeIdentity {
         {
             return Err("native checkpoint manifest aggregate differs from its pinned root".into());
         }
+
+        let image_archive_parts = pinned_release_parts(
+            &image_archive.filename,
+            image_archive.bytes,
+            NATIVE_SEALED.image_archive_parts_sha256,
+            &checkpoint.revision,
+            &image_archive.parts,
+        )?;
+        let consumer_parts = pinned_release_parts(
+            &consumer.filename,
+            consumer.bytes,
+            NATIVE_SEALED.consumer_parts_sha256,
+            &checkpoint.revision,
+            &consumer.parts,
+        )?;
         if qualification.schema != "muser.native-text-onboarding.v1"
             || qualification.prompt_tokens != 2_048
             || qualification.output_tokens != 256
@@ -498,18 +602,26 @@ impl NativeIdentity {
             checkpoint_files: files,
             image_tag: producer.tag.clone(),
             image_id: producer.image_id.clone(),
+            image_archive: Artifact {
+                filename: image_archive.filename.clone(),
+                revision: checkpoint.revision.clone(),
+                url: String::new(),
+                bytes: image_archive.bytes,
+                sha256: image_archive.sha256.clone(),
+            },
+            image_archive_parts,
             adapter_sha256: overlay.adapter_sha256.clone(),
             vllm_commit: overlay.vllm_commit.clone(),
             consumer: Artifact {
                 filename: consumer.filename.clone(),
                 revision: checkpoint.revision.clone(),
-                // The repack is currently operator-supplied. This empty URL
-                // is deliberate: node onboarding never invents a download
-                // location for a 19.6 GB consumer artifact.
+                // The release is multipart, so no single transport URL can
+                // truthfully name the complete artifact.
                 url: String::new(),
                 bytes: consumer.bytes,
                 sha256: consumer.sha256.clone(),
             },
+            consumer_parts,
             tokenizer_sha256: consumer.tokenizer_sha256.clone(),
             chat_template_sha256: consumer.chat_template_sha256.clone(),
             context_policy_sha256: consumer.context_policy_sha256.clone(),
@@ -559,10 +671,13 @@ pub const IMAGE_TAG_PREFIX: &str = "muser-gx10-prefill:";
 
 /// Where `build_gx10_container.py`'s receipts live. Explicit operator
 /// input via `MUSER_RECEIPTS_DIR` — there is no implicit default root.
-pub fn receipts_dir() -> std::path::PathBuf {
+pub fn receipts_dir() -> Result<std::path::PathBuf> {
     std::env::var_os("MUSER_RECEIPTS_DIR")
         .map(std::path::PathBuf::from)
-        .expect("MUSER_RECEIPTS_DIR must name the container-receipts root")
+        .ok_or_else(|| {
+            "the kquant research lane requires MUSER_RECEIPTS_DIR to name its container-receipts root"
+                .into()
+        })
 }
 
 impl ContainerReceipt {
@@ -692,7 +807,13 @@ mod tests {
             NATIVE_SEALED.checkpoint_artifact_sha256
         );
         assert_eq!(identity.image_id, NATIVE_SEALED.image_id);
+        assert_eq!(
+            identity.image_archive.sha256,
+            NATIVE_SEALED.image_archive_sha256
+        );
+        assert_eq!(identity.image_archive_parts.len(), 6);
         assert_eq!(identity.consumer.sha256, NATIVE_SEALED.consumer_sha256);
+        assert_eq!(identity.consumer_parts.len(), 11);
         assert_eq!(identity.rope_cache_sha256, NATIVE_SEALED.rope_cache_sha256);
         assert_eq!(
             cross_vendor_math["qualification"]["rope_cache_sha256"],

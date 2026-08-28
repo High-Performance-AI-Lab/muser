@@ -39,8 +39,8 @@ muser's disaggregated lane splits them along the line that matters:
 The producer prefills your 130k-token prompt in NVFP4 on tensor cores,
 packs the resulting KV cache, and ships it to the consumer, which picks up
 decoding exactly where prefill left off. Everything after the handoff is
-ordinary muser decoding. DFlash is available on the combined kquant lane;
-the native/text lane rejects a DFlash identity by contract.
+ordinary muser decoding. DFlash remains an explicitly selected kquant research
+lane; the shipped native/text lane rejects a DFlash identity by contract.
 
 ## What you get
 
@@ -61,13 +61,16 @@ of the bytes** for a bit-identical result ([`kvpack.md`](kvpack.md)).
 
 ## What you need
 
-- **A producer node**: aarch64 + NVIDIA GPU (GB10-class in the lab), NVIDIA
-  driver, Docker, SSH with key auth. muser's **Add node** wizard
+- **A producer node**: aarch64 GB10/SM121, 96 GiB or more memory, 64 GiB free
+  disk, a 580-series or newer NVIDIA driver, Docker, curl, sha256sum, zstd,
+  and SSH with key auth. muser's **Add node** wizard
   (dashboard, or `muser node add user@host`) does the whole pipeline:
   preflight, pinned runtime deploy, lane-specific model acquisition with
-  SHA-256 verification, enrollment key provisioning, producer start, and the
-  lane-declared three-handoff qualification recipe before the node is marked
-  healthy.
+  SHA-256 verification (including the resumable native Mac GGUF download),
+  enrollment key provisioning, producer start, and the lane-declared
+  three-handoff qualification recipe before the node is marked healthy.
+  Registry-unavailable installs use the public split Docker archive and still
+  admit only the same exact image ID.
 - **A wired 10GbE path for the measured numbers.** The reported matrix used
   a path with a ~9.4 Gbps raw single-stream ceiling. Re-prove the current
   route after any topology change. WiFi works for management but is never a
@@ -81,11 +84,11 @@ of the bytes** for a bit-identical result ([`kvpack.md`](kvpack.md)).
 Then serve with remote prefill:
 
 ```sh
-MUSER_CROSS_VENDOR_QK=1 MUSER_GGML_METALLIB=/path/to/llama.metallib \
+MUSER_CROSS_VENDOR_QK=1 \
   muser serve \
-  --model ~/.muser/models/muse-glimmer-30B-kquant-17gb.gguf \
+  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
   --prefill remote \
-  --cluster-config ~/.muser/nodes/<name>/cluster.json
+  --cluster-config ~/.muser/nodes/host/cluster.json
 ```
 
 `MUSER_CROSS_VENDOR_QK=1` pins the cross-vendor math route the CUDA producer

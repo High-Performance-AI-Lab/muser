@@ -6,16 +6,18 @@ decoding, then — optionally — to the disaggregated GB10 prefill lane.
 ## 1. Requirements
 
 - macOS on Apple Silicon (M-series). Metal is the serving path.
+- 48 GiB free for first-time native artifact assembly (or pass `--model-dir`
+  on a larger volume when adding the node).
 - Rust (see `rust-toolchain.toml` for the pinned version).
 - The pinned Muse Glimmer GGUF. `muser up` can resolve and verify it for
   you, or point `--model` at a file you already have. Pinned filenames and
   SHA-256 values live in [`release-artifacts.json`](release-artifacts.json);
   validate downloads with `python3 scripts/validate_release_artifacts.py`.
-- For Metal builds: the source-pinned llama.cpp metallib. Set
-  `MUSER_GGML_METALLIB=/absolute/path/to/llama.metallib` — a Metal-enabled
-  checkout **fails closed** without it, because Q6_K tensors route through
-  the source-pinned llama kernels. (A `--no-default-features` build needs no
-  metallib, but it is the CPU correctness path, not the serving path.)
+- The source-pinned llama.cpp metallib used by a few Metal kernels. Muser
+  downloads the 7 MB binary and its source receipt on first use, then pins
+  both SHA-256 values. `MUSER_GGML_METALLIB=/absolute/path/to/llama.metallib`
+  remains an override and is held to the same receipt. A
+  `--no-default-features` build is the CPU correctness path.
 
 ## 2. Build and serve
 
@@ -25,18 +27,18 @@ cargo build --release
 # One-button path: resolves the pinned Hugging Face repo id, streams only the
 # manifest-pinned GGUF into $MUSER_HOME/models (default ~/.muser/models),
 # verifies byte size and SHA-256, serves, and opens the dashboard. Ctrl-C stops.
-MUSER_GGML_METALLIB=/path/to/llama.metallib ./target/release/muser up
+./target/release/muser up
 
 # The repository selector is explicit when desired. A different repo id is
 # refused because Hugging Face is transport, not the model trust root.
-MUSER_GGML_METALLIB=/path/to/llama.metallib ./target/release/muser up \
+./target/release/muser up \
   --hf-repo meta-models/Muse-Glimmer-30B-GGUF
 ```
 
 Or explicitly:
 
 ```sh
-MUSER_GGML_METALLIB=/path/to/llama.metallib ./target/release/muser serve \
+./target/release/muser serve \
   --model /path/to/muse-glimmer-30B-kquant-17gb.gguf
 ```
 
@@ -72,7 +74,7 @@ available in the same server. See [`telemetry.md`](telemetry.md).
 ## 4. Turn on DFlash speculative decoding
 
 ```sh
-MUSER_GGML_METALLIB=/path/to/llama.metallib ./target/release/muser serve \
+./target/release/muser serve \
   --model /path/to/muse-glimmer-30B-kquant-17gb.gguf \
   --dflash /path/to/dflash-kquant.gguf
 ```
@@ -92,8 +94,9 @@ kquant.
 
 ## 5. Go disaggregated (optional)
 
-**What you need:** a GB10-class (or other NVIDIA aarch64) node reachable over
-SSH with key auth, running an NVIDIA driver and Docker; and, for the
+**What you need:** a GB10/SM121 aarch64 node with at least 96 GiB memory and
+64 GiB free disk, reachable over SSH with key auth, running a 580-series or
+newer NVIDIA driver, Docker, curl, sha256sum, and zstd; and, for the
 measured performance above, a **wired point-to-point 10GbE link** between the
 Mac and the node (the lab's numbers were measured with EEE disabled on that
 link — see [`disaggregated-prefill.md`](disaggregated-prefill.md) for why
@@ -102,23 +105,25 @@ that matters).
 **One pipeline from the dashboard:** open the dashboard, click **Add node**,
 give it `user@host`. muser runs preflight (SSH, aarch64, driver, docker),
 deploys the pinned runtime, acquires and SHA-verifies the lane's pinned model
-artifacts, and provisions enrollment-v2 keys (TLS key generated and retained
+artifacts (including a resumable 11-part download of the native Mac GGUF when
+it is absent), and provisions enrollment-v2 keys (TLS key generated and retained
 on the node;
 HMAC shared secret over authenticated SSH), starts the producer, and runs the
-enrolled lane's qualification recipe: three ordered 2,048/256 native-text or
-combined target-plus-DFlash handoffs. The node is marked healthy only after
-that recipe passes. The same pipeline is available as `muser node add
-<user@host>`. Step-by-step reference:
+shipped native NVFP4 qualification recipe: three ordered 2,048/256
+native-text handoffs. The node is marked healthy only after that recipe
+passes. Fresh nodes select this lane without a flag; `--producer llamacpp`
+explicitly selects the kquant+DFlash research lane. The same pipeline is
+available as `muser node add <user@host>`. Step-by-step reference:
 [`one-button-onboarding.md`](one-button-onboarding.md).
 
 **Serve with remote prefill:**
 
 ```sh
-MUSER_CROSS_VENDOR_QK=1 MUSER_GGML_METALLIB=/path/to/llama.metallib \
+MUSER_CROSS_VENDOR_QK=1 \
   ./target/release/muser serve \
-  --model ~/.muser/models/muse-glimmer-30B-kquant-17gb.gguf \
+  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
   --prefill remote \
-  --cluster-config ~/.muser/nodes/<name>/cluster.json
+  --cluster-config ~/.muser/nodes/host/cluster.json
 ```
 
 `MUSER_CROSS_VENDOR_QK=1` selects the cross-vendor math route the CUDA

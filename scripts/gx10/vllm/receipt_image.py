@@ -69,16 +69,6 @@ def main() -> None:
     if missing:
         parser.error(f"receipt sources are missing: {missing}")
     inspect = json.loads(command("docker", "image", "inspect", args.image))[0]
-    exporter_source = json.loads(
-        command(
-            "docker", "image", "inspect", "muser-gx10-prefill:nvfp4-dflash-rope-v96"
-        )
-    )[0]
-    expected_exporter_source = (
-        "sha256:79c8c31d1ae2193ed59ef26a5893e90c0d5e97d8d4537b9eefd2ed29ea07c562"
-    )
-    if exporter_source["Id"] != expected_exporter_source:
-        parser.error("DFlash exporter source image ID differs from the pinned build input")
     runtime_script = (
         "import json,subprocess,torch,transformers,vllm;"
         "from muser_vllm.connector import MuserMuseHandoffConnector;"
@@ -108,16 +98,6 @@ def main() -> None:
         "base_digest": "sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268",
         "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
         "vllm_wheel_sha256": "230d876ef3d90718ce8b42bef3b24c4384a714d623db7a2eb9c27c59d138066c",
-        "dflash_exporter_source_image_id": expected_exporter_source,
-        "dflash_exporter_sha256": command(
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "sha256sum",
-            args.image,
-            "/opt/muser/bin/spark_kv_export",
-        ).split()[0],
         "sources": {
             str(path.relative_to(root)): sha256_file(path) for path in files
         },

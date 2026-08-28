@@ -31,3 +31,12 @@ def consume_receipt() -> dict[str, Any]:
         receipt = _receipt
         _receipt = None
         return receipt
+
+
+def discard_receipt() -> bool:
+    """Clear a receipt produced for a request whose client disappeared."""
+    global _receipt
+    with _lock:
+        present = _receipt is not None
+        _receipt = None
+        return present

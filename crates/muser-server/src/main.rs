@@ -126,6 +126,10 @@ fn run_serve(args: ServeArgs) -> Result<(), String> {
     if args.ane_manifest.is_some() && args.dflash.is_none() {
         return Err("--ane-manifest requires --dflash".into());
     }
+    if args.model.is_some() && !matches!(args.backend, cli::BackendArg::Cpu) {
+        model::activate_metallib()
+            .map_err(|error| format!("resolve pinned Metal runtime: {error}"))?;
+    }
     let configured_remote_model_sha256 = args
         .cluster_config
         .as_deref()

@@ -130,6 +130,7 @@ pub fn run(args: UpArgs) -> Result<(), UpError> {
     let effective = EffectiveConfig::resolve(&args, &file_cfg)?;
     httpd::validate_bind_security(&effective.host, effective.port, &effective.security)
         .map_err(UpError::Policy)?;
+    model::activate_metallib()?;
 
     println!("{}", style("Resolving Muse Glimmer-30B weights").bold());
     let resolved = model::resolve(ResolveRequest {

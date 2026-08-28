@@ -1,5 +1,3 @@
-FROM muser-gx10-prefill:nvfp4-dflash-rope-v96 AS dflash-exporter
-
 FROM nvcr.io/nvidia/vllm:26.07-py3@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268
 
 ARG VLLM_COMMIT=6adad08767583f52eb4d2122111af0bf638ed5e6
@@ -25,9 +23,6 @@ ENV PYTHONHASHSEED=0 \
     CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     PYTHONPATH=/opt/muser/scripts/gx10/vllm \
     LD_LIBRARY_PATH=/opt/muser/lib:${LD_LIBRARY_PATH}
-
-COPY --from=dflash-exporter /opt/muser/bin/spark_kv_export /opt/muser/bin/spark_kv_export
-COPY --from=dflash-exporter /opt/muser/lib /opt/muser/lib
 
 COPY scripts/gx10/llamacpp/llamacpp_session_send.py /opt/muser/scripts/gx10/llamacpp/llamacpp_session_send.py
 COPY scripts/gx10/llamacpp/protocol.py /opt/muser/scripts/gx10/llamacpp/protocol.py

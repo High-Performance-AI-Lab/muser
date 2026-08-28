@@ -56,6 +56,15 @@ PINNED_VLLM_COMMIT = "6adad08767583f52eb4d2122111af0bf638ed5e6"
 EXPECTED_LAYERS = 52
 EXPECTED_KV_HEADS = 2
 EXPECTED_HEAD_DIM = 128
+_REQUEST_CANCELLATION = threading.Event()
+
+
+def clear_request_cancellation() -> None:
+    _REQUEST_CANCELLATION.clear()
+
+
+def request_cancellation() -> None:
+    _REQUEST_CANCELLATION.set()
 
 
 @dataclass
@@ -238,6 +247,14 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
                 f"vLLM layer order changed: got {layer}, expected {self._layers_saved}"
             )
         self._layers_saved += 1
+        if self._send_error is not None:
+            # Defer the transport error until wait_for_save. A disappearing
+            # receiver and its control-client cancellation arrive on separate
+            # sockets and can race by a few milliseconds. Raising from this
+            # model hook makes vLLM dump the entire scheduled prompt; waiting
+            # until the post-forward seam avoids that disclosure and lets a
+            # controlled cancellation complete without poisoning the engine.
+            return
         pair = self._extract_pair(
             kv_layer,
             attn_metadata.slot_mapping,
@@ -356,6 +373,8 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
             raise ProtocolError("Muse sender was not initialized")
         committed = False
         try:
+            if _REQUEST_CANCELLATION.is_set():
+                return
             if self._layers_saved != EXPECTED_LAYERS:
                 raise ProtocolError(
                     f"incomplete Muse layer set: received {self._layers_saved}"
@@ -369,10 +388,15 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
             while self._next_intent < len(self._intents):
                 self._send_queue.put(self._intents[self._next_intent])
                 self._next_intent += 1
-            self._send_queue.join()
             self._send_queue.put(None)
             self._sender_thread.join()
             if self._send_error is not None:
+                # The host watcher closes the Unix request client after it
+                # observes the receiver's control connection disappear. Give
+                # that independent signal a small race window before treating
+                # a data-plane loss as an ordinary producer failure.
+                if _REQUEST_CANCELLATION.wait(timeout=0.25):
+                    return
                 raise ProtocolError(f"Muse sender thread failed: {self._send_error}")
             if len(self._materialized) != EXPECTED_LAYERS:
                 raise ProtocolError(
@@ -445,10 +469,17 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
             )
         finally:
             if not committed:
-                sender.abort("vllm producer failure")
                 if self._sender_thread is not None and self._sender_thread.is_alive():
                     self._send_queue.put(None)
                     self._sender_thread.join(timeout=5)
+                if self._sender_thread is not None and self._sender_thread.is_alive():
+                    # Socket shutdown is the only safe way to interrupt a
+                    # sender blocked in TLS I/O. It owns protocol writes; this
+                    # thread must not race it by emitting an abort frame.
+                    sender.interrupt()
+                    self._sender_thread.join(timeout=5)
+                else:
+                    sender.abort("vllm producer failure")
             self._request = None
             self._sender = None
             self._pending = {}

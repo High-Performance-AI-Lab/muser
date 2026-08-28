@@ -6,8 +6,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -222,6 +224,78 @@ class NativePrefilldTests(unittest.TestCase):
         self.assertEqual(set(value), {"schema", "checkpoint_artifact_sha256", "checkpoint_revision", "vllm_commit", "connector"})
         self.assertEqual(value["connector"]["hmac_key_file"], "/run/muser/pki/hmac.key")
         self.assertNotIn("hmac_key", value["connector"])
+
+    def test_receiver_loss_cancels_the_request_and_retains_the_warm_resident(self) -> None:
+        process = mock.Mock()
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["docker", "exec"], 0.05),
+            ("", ""),
+        ]
+        with (
+            mock.patch.object(native.subprocess, "Popen", return_value=process),
+            mock.patch.object(native.control, "receiver_gone", return_value=True),
+            mock.patch.object(native, "cancel_inner_request", return_value=True) as cancel,
+            mock.patch.object(native, "recover_container") as recover,
+        ):
+            with self.assertRaisesRegex(
+                native.NativePrefilldError, "receiver went away.*warm producer retained"
+            ):
+                native.run_controlled_command(
+                    {"timeout_seconds": 900},
+                    ["docker", "exec"],
+                    object(),
+                    "request-7",
+                )
+        process.kill.assert_called_once_with()
+        cancel.assert_called_once_with({"timeout_seconds": 900}, "request-7")
+        recover.assert_not_called()
+
+    def test_request_timeout_restarts_instead_of_leaving_the_gpu_busy(self) -> None:
+        process = mock.Mock()
+        process.communicate.return_value = ("stdout", "stderr")
+        with (
+            mock.patch.object(native.subprocess, "Popen", return_value=process),
+            mock.patch.object(native.time, "monotonic", side_effect=[0.0, 32.0]),
+            mock.patch.object(native, "cancel_inner_request", return_value=True) as cancel,
+            mock.patch.object(native, "recover_container") as recover,
+        ):
+            with self.assertRaisesRegex(
+                native.NativePrefilldError, "timed out.*warm producer retained"
+            ):
+                native.run_controlled_command(
+                    {"timeout_seconds": 1},
+                    ["docker", "exec"],
+                    object(),
+                    "request-8",
+                )
+        process.kill.assert_called_once_with()
+        cancel.assert_called_once_with({"timeout_seconds": 1}, "request-8")
+        recover.assert_not_called()
+
+    def test_failed_warm_cancel_falls_back_to_exact_container_recovery(self) -> None:
+        process = mock.Mock()
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["docker", "exec"], 0.05),
+            ("", ""),
+        ]
+        with (
+            mock.patch.object(native.subprocess, "Popen", return_value=process),
+            mock.patch.object(native.control, "receiver_gone", return_value=True),
+            mock.patch.object(native, "cancel_inner_request", return_value=False),
+            mock.patch.object(native, "recover_container") as recover,
+        ):
+            with self.assertRaisesRegex(
+                native.NativePrefilldError, "warm cancel failed.*restarted"
+            ):
+                native.run_controlled_command(
+                    {"timeout_seconds": 900},
+                    ["docker", "exec"],
+                    object(),
+                    "request-9",
+                )
+        recover.assert_called_once_with(
+            {"timeout_seconds": 900}, "warm request cancellation did not reach idle"
+        )
 
 
 if __name__ == "__main__":

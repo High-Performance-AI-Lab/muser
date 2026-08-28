@@ -128,7 +128,11 @@ def main() -> None:
         client.settimeout(args.timeout_seconds)
         client.connect(args.sock)
         client.sendall(payload)
-        client.shutdown(socket.SHUT_WR)
+        # Keep both directions open while the resident engine works. The
+        # resident watches this socket to cancel abandoned requests; a
+        # write-half close is indistinguishable from a vanished client on
+        # that side of a Unix stream even though this client still intends
+        # to read the response.
         chunks: list[bytes] = []
         size = 0
         while True:

@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import select
 import socket
 import stat
 import subprocess
@@ -59,6 +60,42 @@ def acquire_accelerator_lease(path: Path):
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def connection_gone(connection: socket.socket) -> bool:
+    """True when the one-request Unix client has closed its side."""
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+    except (OSError, ValueError):
+        return True
+    if not readable:
+        return False
+    try:
+        # The request line has already been consumed. Further bytes are a
+        # protocol violation; EOF is the normal abandoned-client signal.
+        connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        return True
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+
+
+def set_idle(path: Path, idle: bool) -> None:
+    if not idle:
+        path.unlink(missing_ok=True)
+        return
+    path.touch(mode=0o600, exist_ok=True)
+    os.chmod(path, 0o600)
+
+
+def engine_is_idle(engine: Any) -> bool:
+    """Return true only when both public vLLM request views are empty."""
+    llm_engine = engine.llm_engine
+    return (
+        llm_engine.get_num_unfinished_requests() == 0
+        and not llm_engine.has_unfinished_requests()
+    )
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -594,6 +631,7 @@ def main() -> None:
     accelerator_lease = acquire_accelerator_lease(lease_path)
 
     from vllm import SamplingParams, TokensPrompt
+    from vllm.outputs import RequestOutput
 
     (
         engine,
@@ -657,6 +695,8 @@ def main() -> None:
     server.bind(str(socket_path))
     os.chmod(socket_path, 0o600)
     server.listen(1)
+    idle_path = Path(f"{socket_path}.idle")
+    set_idle(idle_path, True)
     print(
         f"[muser-nvfp4-producer] ready; lease={lease_path}; "
         f"lease_fd={accelerator_lease.fileno()}",
@@ -665,8 +705,10 @@ def main() -> None:
     consecutive_errors = 0
     while True:
         connection, _ = server.accept()
+        set_idle(idle_path, False)
         with connection:
             engine_touched = False
+            controlled_abort = False
             try:
                 if dflash_process is not None and dflash_process.poll() is not None:
                     raise RuntimeError(
@@ -712,25 +754,59 @@ def main() -> None:
                         set_exact_stage_capture_enabled,
                     )
 
+                cancel_requested = threading.Event()
+                from muser_vllm.connector import (
+                    clear_request_cancellation,
+                    request_cancellation,
+                )
+
+                clear_request_cancellation()
+
                 def generate() -> None:
+                    request_ids: list[str] = []
                     try:
-                        result_box["outputs"] = engine.generate(
-                            TokensPrompt(prompt_token_ids=request["token_ids"]),
-                            SamplingParams(
-                                temperature=0,
-                                max_tokens=1,
-                                ignore_eos=True,
-                                seed=0,
-                                extra_args={
-                                    "kv_transfer_params": {
-                                        "muser_handoff": request["handoff"]
-                                    }
-                                },
+                        sampling = SamplingParams(
+                            temperature=0,
+                            max_tokens=1,
+                            ignore_eos=True,
+                            seed=0,
+                            extra_args={
+                                "kv_transfer_params": {
+                                    "muser_handoff": request["handoff"]
+                                }
+                            },
+                        )
+                        request_ids = engine._add_completion_requests(
+                            prompts=TokensPrompt(
+                                prompt_token_ids=request["token_ids"]
                             ),
+                            params=sampling,
                             use_tqdm=False,
+                        )
+                        result_box["request_ids"] = request_ids
+                        result_box["outputs"] = engine._run_engine(
+                            RequestOutput, use_tqdm=False
                         )
                     except BaseException as error:
                         result_box["error"] = error
+                    finally:
+                        # VLLM_ENABLE_V1_MULTIPROCESSING=0 makes step() and
+                        # abort_request() mutate the same in-process scheduler.
+                        # Cleanup therefore belongs on this engine thread,
+                        # after the active CUDA step has returned. Calling
+                        # abort_request() from the socket watcher corrupts the
+                        # scheduler and can produce a false-idle CPU spin.
+                        if cancel_requested.is_set() and request_ids:
+                            try:
+                                engine.llm_engine.abort_request(
+                                    request_ids, internal=True
+                                )
+                            except BaseException as error:
+                                result_box["cleanup_error"] = error
+                        try:
+                            result_box["engine_idle"] = engine_is_idle(engine)
+                        except BaseException as error:
+                            result_box["idle_check_error"] = error
 
                 worker = threading.Thread(target=generate, daemon=True)
                 if exact_mode:
@@ -739,14 +815,34 @@ def main() -> None:
                 try:
                     engine_touched = True
                     worker.start()
-                    worker.join(WATCHDOG_SECONDS)
+                    deadline = time.monotonic() + WATCHDOG_SECONDS
+                    while worker.is_alive() and time.monotonic() < deadline:
+                        worker.join(0.05)
+                        if not controlled_abort and connection_gone(connection):
+                            controlled_abort = True
+                            cancel_requested.set()
+                            request_cancellation()
                 finally:
                     if exact_mode:
                         set_exact_stage_capture_enabled(False)
                         set_exact_attention_enabled(False)
                 if worker.is_alive():
-                    print("[muser-nvfp4-producer] watchdog fired", flush=True)
+                    reason = "cancellation" if controlled_abort else "watchdog"
+                    print(f"[muser-nvfp4-producer] {reason} failed", flush=True)
                     os._exit(75)
+                if controlled_abort:
+                    if (
+                        "cleanup_error" in result_box
+                        or "idle_check_error" in result_box
+                        or result_box.get("engine_idle") is not True
+                    ):
+                        print(
+                            "[muser-nvfp4-producer] cancellation finished without "
+                            "a verified idle engine",
+                            flush=True,
+                        )
+                        os._exit(75)
+                    raise RuntimeError("request client disconnected; vLLM request canceled")
                 if "error" in result_box:
                     raise result_box["error"]
                 outputs = result_box["outputs"]
@@ -772,10 +868,20 @@ def main() -> None:
                 }
             except BaseException as error:
                 from muser_vllm.dflash_capture import abort_capture
+                from muser_vllm.receipt import discard_receipt
 
                 abort_capture()
-                traceback.print_exc()
-                consecutive_errors += 1
+                discard_receipt()
+                if controlled_abort:
+                    print(
+                        "[muser-nvfp4-producer] abandoned request canceled; "
+                        "engine verified idle",
+                        flush=True,
+                    )
+                    consecutive_errors = 0
+                else:
+                    traceback.print_exc()
+                    consecutive_errors += 1
                 response = {
                     "status": "error",
                     "error": str(error),
@@ -785,16 +891,26 @@ def main() -> None:
                 consecutive_errors = 0
             try:
                 connection.sendall((_canonical(response) + b"\n"))
+            except OSError as error:
+                print(
+                    f"[muser-nvfp4-producer] request client left before response: {error}",
+                    flush=True,
+                )
             finally:
                 # A connector/send failure can leave vLLM's synchronous V1
                 # engine request registered even though generate() raised.
                 # Reusing that engine produced a host-side busy loop with no
                 # GPU work. Fail closed after returning the error so an
                 # orchestrator can restart from the persistent compile cache.
-                if engine_touched and response["status"] != "ok":
+                if (
+                    engine_touched
+                    and response["status"] != "ok"
+                    and not controlled_abort
+                ):
                     os._exit(75)
             if consecutive_errors >= 3:
                 os._exit(75)
+            set_idle(idle_path, True)
 
 
 if __name__ == "__main__":

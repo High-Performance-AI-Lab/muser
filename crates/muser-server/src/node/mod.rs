@@ -102,7 +102,7 @@ impl Ctx {
     pub fn receipt(&self) -> Result<ContainerReceipt> {
         match &self.container_receipt {
             Some(path) => ContainerReceipt::load(path),
-            None => ContainerReceipt::newest(&artifacts::receipts_dir()),
+            None => ContainerReceipt::newest(&artifacts::receipts_dir()?),
         }
     }
 
@@ -140,56 +140,27 @@ impl Ctx {
     }
 
     pub fn pinned_metallib(&self) -> Result<PathBuf> {
-        use sha2::{Digest as _, Sha256};
-
-        let path = self
-            .ggml_metallib
-            .as_ref()
-            .ok_or_else(|| {
-                "GX10 qualification requires --ggml-metallib or MUSER_GGML_METALLIB".to_string()
-            })?
-            .canonicalize()
-            .map_err(|error| format!("resolve pinned GGML metallib: {error}"))?;
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| format!("inspect {}: {error}", path.display()))?;
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-            return Err(format!("{} is not a regular metallib", path.display()));
+        if let Some(configured) = &self.ggml_metallib {
+            let path = configured
+                .canonicalize()
+                .map_err(|error| format!("resolve pinned GGML metallib: {error}"))?;
+            let receipt = self
+                .ggml_metallib_receipt
+                .clone()
+                .unwrap_or_else(|| path.with_file_name("source-receipt.json"));
+            crate::model::validate_metallib(&path, &receipt)
+                .map_err(|error| format!("verify pinned GGML metallib: {error}"))?;
+            return Ok(path);
         }
-        let receipt_path = self
-            .ggml_metallib_receipt
-            .clone()
-            .unwrap_or_else(|| path.with_file_name("source-receipt.json"));
-        let receipt: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&receipt_path)
-                .map_err(|error| format!("read {}: {error}", receipt_path.display()))?,
-        )
-        .map_err(|error| format!("parse {}: {error}", receipt_path.display()))?;
-        let bytes =
-            std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        if receipt.get("schema").and_then(serde_json::Value::as_str)
-            != Some("muser.llama_metallib.source_receipt.v1")
-            || receipt
-                .get("source_commit")
-                .and_then(serde_json::Value::as_str)
-                != Some(artifacts::LLAMA_CPP_COMMIT)
-            || receipt
-                .get("binary_size_bytes")
-                .and_then(serde_json::Value::as_u64)
-                != Some(bytes.len() as u64)
-            || receipt
-                .get("binary_sha256")
-                .and_then(serde_json::Value::as_str)
-                != Some(digest.as_str())
-        {
-            return Err(format!(
-                "{} does not bind {} to pinned llama.cpp {}",
-                receipt_path.display(),
-                path.display(),
-                artifacts::LLAMA_CPP_COMMIT
-            ));
+        if self.dry_run {
+            return crate::model::default_metallib_path().map_err(|error| error.to_string());
         }
-        Ok(path)
+        self.progress.emit(
+            Step::Smoke,
+            Status::Info,
+            "resolving the pinned 7 MB llama.cpp Metal runtime",
+        );
+        crate::model::ensure_metallib(None).map_err(|error| error.to_string())
     }
 }
 
@@ -240,7 +211,8 @@ fn add(args: NodeAddArgs) -> Result<()> {
     }
     // An explicit `--producer` restates the lane (llamacpp is stored as
     // `None`, the registry's pre-native shape); no flag leaves an existing
-    // entry on the lane it was enrolled for.
+    // entry on the lane it was enrolled for. A new draft already selects
+    // native explicitly.
     if let Some(producer) = args.producer {
         entry.producer = (producer != ProducerKind::Llamacpp).then_some(producer);
     }

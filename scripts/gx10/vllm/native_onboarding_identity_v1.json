@@ -1,7 +1,7 @@
 {
   "schema": "muser.native-onboarding-identity.v1",
   "status": "frozen",
-  "source_runtime_identity_sha256": "59a7e8c919745711d2af537f391e799c48d20148a7e1ecd8c9d7b7a87cf9102e",
+  "source_runtime_identity_sha256": "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264",
   "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
   "checkpoint": {
     "repository": "RedHatAI/Muse-Glimmer-30B-NVFP4",
@@ -75,16 +75,60 @@
     "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
   },
   "producer_image": {
-    "tag": "muser/gx10-vllm-native:593b96a",
-    "image_id": "sha256:578888b29e42138a0821b68f94d952a4acc958660232e53d3ebff3ae9d933750",
-    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-image-593b96a-retrospective-20260823.json",
-    "receipt_sha256": "163783f1f98ae341fc2425409e885b886e54a4274468a263c4476939e3327e45"
+    "tag": "ghcr.io/high-performance-ai-lab/muser-gx10-vllm-native:nvfp4-20260828",
+    "image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/nvfp4-vllm-image-release-final3-20260828.json",
+    "receipt_sha256": "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6",
+    "archive": {
+      "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst",
+      "compression": "zstd",
+      "bytes": 9550405774,
+      "sha256": "eff84d1d6af33c7bd4bff1cb2ae4129f79bf3dab2cfd64b62f93efcad348a2fa",
+      "parts": [
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-00",
+          "bytes": 1900000000,
+          "sha256": "c953b1704e9321f1434016bf69dbf815857b677f30b74a6cb197aea670c07530",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-00"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-01",
+          "bytes": 1900000000,
+          "sha256": "10468d3db6eb4b9149dcb67d62ea87a253500b3c86d25adddcb8661548ae32da",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-01"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-02",
+          "bytes": 1900000000,
+          "sha256": "8b0f040a0ec65c9bc88392519372965f2a258f93f67fa6e59324f8f7ed17546c",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-02"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-03",
+          "bytes": 1900000000,
+          "sha256": "37d592612fee03ba47b1595284eb726760365b1435ff4ae8e9db7e59841fe54b",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-03"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-04",
+          "bytes": 1900000000,
+          "sha256": "10b8a7bfe8bdad79edd63bea1b3556127cc0029510af54c043850b089816e819",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-04"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-05",
+          "bytes": 50405774,
+          "sha256": "e4fda4efb9678e0d28f4fd09843999343c662915b902899a946dea3f181b025f",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-05"
+        }
+      ]
+    }
   },
   "vllm_overlay": {
-    "adapter_sha256": "c49c171ffdeaa34fcff5a9be80af3256be245ed81902ce35d97cc825e197d1f7",
+    "adapter_sha256": "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
     "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-adapter-593b96a-retrospective-20260823.json",
-    "receipt_sha256": "695f9ad0941181123b1bdc4eaea4db2f2249f7a18fd45217c92b328652b45e68"
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/spark-producer-adapter-release-final3-20260828.json",
+    "receipt_sha256": "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2"
   },
   "rope_cache": {
     "schema": "muser.vllm-rope-cache.v2",
@@ -95,6 +139,74 @@
     "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf",
     "bytes": 19552725248,
     "sha256": "dc9865ef9770324b1b5d7bdebc7fc6b2c9fb125084fe2461b6f5168c552193b1",
+    "parts": [
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-00",
+        "bytes": 1900000000,
+        "sha256": "32e277f18ba2701bb91fc363bd3b2ddd0a436a77fd876bf26dfd6f993fbf0a72",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-00"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-01",
+        "bytes": 1900000000,
+        "sha256": "b370e64cb3a672c58b2dc005a6c942998b3e3ba243a8ff610f41aa73dfc22368",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-01"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-02",
+        "bytes": 1900000000,
+        "sha256": "611771f763e4d0d368c08370038c4e76d661fa5aa9a0348cc17a9eeadc936ce8",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-02"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-03",
+        "bytes": 1900000000,
+        "sha256": "729e0d7366a5e957e7194d074fc03d2dc0b7203cc0f0f42d4c5e5b0d52ec14fc",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-03"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-04",
+        "bytes": 1900000000,
+        "sha256": "86d0f81dd2d56e2b10b4f223bd3477d8166fcbcb985de0c725b24ffb9ab99736",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-04"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-05",
+        "bytes": 1900000000,
+        "sha256": "9e325c00505327846605686ad5fd252c80f0bfa6206480baf5751f31a1bab346",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-05"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-06",
+        "bytes": 1900000000,
+        "sha256": "34bc48fb6b8711c84bad5a0584983b124c47f0f6f3ccc98d69ca37199e86e3f7",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-06"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-07",
+        "bytes": 1900000000,
+        "sha256": "0beb1c598007fcf4dbdbcb2085d225e5f8450f0b0f90c4d2e6e7125963800f9d",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-07"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-08",
+        "bytes": 1900000000,
+        "sha256": "91a570043d3c2fb7f5f0eeab383a4a97b4ea88a24986da950274a967f4b6cc3a",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-08"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-09",
+        "bytes": 1900000000,
+        "sha256": "8bf75768adc8898ab41349e0183eb593d41e73699cb76559df6e5c2c461fc9d2",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-09"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-10",
+        "bytes": 552725248,
+        "sha256": "bd86de0982bb9b5429ccd85443be47901ec7446b0b5db8c8afe424a8f0c81417",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-10"
+      }
+    ],
     "tokenizer_sha256": "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
     "chat_template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
     "context_policy_sha256": "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",

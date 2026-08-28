@@ -760,6 +760,11 @@ fn cluster_config_value(
     });
     match producer {
         ProducerKind::Llamacpp => {
+            // The bitwise kquant research exporter cannot reliably complete
+            // deeper prompts within the 900 s protocol ceiling. Keep that
+            // measured limitation on this lane only; native remains open to
+            // the receipted 128k context path.
+            value["remote_max_prompt_tokens"] = json!(4096);
             // Combined target+DFlash transfers: the receiver pins the DFlash
             // identity so admission refuses a cache built by any other one.
             value["dflash_identity_sha256"] = json!(release.dflash.sha256);
@@ -1073,7 +1078,9 @@ mod tests {
         assert_eq!(config.minimum_hmac_epoch, 1);
         assert!(config.peer_leaf_sha256.contains(&node.pin));
         assert_eq!(config.identity.model_sha256, release.target.sha256);
-        // The default lane enrolls the DFlash identity and names no mode.
+        // The research lane enrolls the DFlash identity, names no mode, and
+        // alone carries the measured protocol-depth cap.
+        assert_eq!(config.remote_max_prompt_tokens, 4096);
         assert_eq!(
             config.dflash_identity_sha256.as_deref(),
             Some(release.dflash.sha256.as_str())
@@ -1166,6 +1173,7 @@ mod tests {
             config.producer_mode,
             Some(muser_cluster::config::Nvfp4ProducerMode::Native)
         );
+        assert_eq!(config.remote_max_prompt_tokens, usize::MAX);
         assert_eq!(config.dflash_identity_sha256, None);
         assert_eq!(config.dflash_context_geometry, None);
         let _ = std::fs::remove_dir_all(&home);

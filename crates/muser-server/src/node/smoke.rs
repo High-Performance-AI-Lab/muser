@@ -167,6 +167,8 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         return Ok(());
     }
 
+    ensure_metal_qualifier(ctx)?;
+
     let mut rtts = Vec::with_capacity(RTT_SAMPLES);
     for _ in 0..RTT_SAMPLES {
         rtts.push(millis(ssh.tcp_probe(DAEMON_PORT, PROBE_TIMEOUT)?));
@@ -181,13 +183,13 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         serde_json::json!({ "netqual_rtt_ms": rtt_ms, "samples": rtts }),
     );
 
-    if ctx.prompt_fixture.is_none() && !fixture.is_file() {
-        write_private(&fixture, prompt_fixture(recipe).as_bytes())?;
+    if ctx.prompt_fixture.is_none() && ensure_default_fixture(&fixture, recipe)? {
         ctx.progress.emit(
             Step::Smoke,
             Status::Info,
             &format!(
-                "wrote a {SMOKE_PROMPT_TOKENS}-position fixture to {}",
+                "wrote the {} {SMOKE_PROMPT_TOKENS}-position fixture to {}",
+                recipe.public_name(),
                 fixture.display()
             ),
         );
@@ -599,6 +601,70 @@ fn prompt_fixture(recipe: QualificationRecipe) -> String {
     }
 }
 
+/// Keep the generated fixture coupled to the selected lane. A node can be
+/// re-enrolled from the historical kquant lane to native while retaining its
+/// local node directory; reusing the old recipe's bytes makes the immutable
+/// native qualification gate fail before the first handoff.
+fn ensure_default_fixture(path: &Path, recipe: QualificationRecipe) -> Result<bool> {
+    let wanted = prompt_fixture(recipe);
+    if std::fs::read(path).ok().as_deref() == Some(wanted.as_bytes()) {
+        return Ok(false);
+    }
+    write_private(path, wanted.as_bytes())?;
+    Ok(true)
+}
+
+/// A workspace-wide `cargo build --release` does not activate package-local
+/// features on `muser-bench`, even though the server itself enables Metal.
+/// Build the exact executor the onboarding gate needs before taking the GPU
+/// lease, so a clean clone cannot discover the feature mismatch at runtime.
+fn ensure_metal_qualifier(ctx: &Ctx) -> Result<()> {
+    let binary = ctx.qualify_binary();
+    if std::env::var_os("MUSER_REMOTE_QUALIFY").is_some() {
+        return binary
+            .is_file()
+            .then_some(())
+            .ok_or_else(|| format!("MUSER_REMOTE_QUALIFY is not a file: {}", binary.display()));
+    }
+    if !cfg!(target_os = "macos") {
+        return Err("node qualification requires macOS Metal on the consumer".into());
+    }
+    let output = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--package",
+            "muser-bench",
+            "--bin",
+            "muser-remote-qualify",
+            "--features",
+            "metal",
+        ])
+        .current_dir(&ctx.repo_root)
+        .output()
+        .map_err(|error| format!("build Metal remote qualifier: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "build Metal remote qualifier failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .rev()
+                .take(2048)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        ));
+    }
+    if !binary.is_file() {
+        return Err(format!(
+            "Metal remote qualifier build did not produce {}",
+            binary.display()
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn qualify_argv(
     ctx: &Ctx,
@@ -747,6 +813,25 @@ mod tests {
             ),
             "149ac0d9c37c957823e53c0637b52a38f2ac601089dbda9f98eec4bc5f369030"
         );
+    }
+
+    #[test]
+    fn switching_lanes_replaces_the_generated_fixture() {
+        let root =
+            std::env::temp_dir().join(format!("muser-lane-fixture-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("smoke-2048.tokens");
+        assert!(
+            ensure_default_fixture(&path, QualificationRecipe::KquantTargetPlusDflash).unwrap()
+        );
+        assert!(ensure_default_fixture(&path, QualificationRecipe::NativeText).unwrap());
+        assert!(!ensure_default_fixture(&path, QualificationRecipe::NativeText).unwrap());
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())),
+            "149ac0d9c37c957823e53c0637b52a38f2ac601089dbda9f98eec4bc5f369030"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -962,7 +1047,8 @@ mod tests {
 
     #[test]
     fn the_llamacpp_lane_keeps_its_combined_gate() {
-        let entry = NodeEntry::draft("gx10", "muser", "gx10.local", Path::new("/tmp"), None);
+        let mut entry = NodeEntry::draft("gx10", "muser", "gx10.local", Path::new("/tmp"), None);
+        entry.producer = None;
         assert_eq!(entry.producer_kind(), ProducerKind::Llamacpp);
         assert_eq!(
             entry.producer_kind().qualification_recipe().variant(),

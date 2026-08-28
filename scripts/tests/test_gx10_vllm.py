@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import struct
 import sys
 import tempfile
@@ -27,7 +28,12 @@ from muser_vllm.packing import (
     pack_intent_payload,
     token_ids_sha256,
 )
-from muser_vllm.receipt import consume_receipt, ensure_slot_available, publish_receipt
+from muser_vllm.receipt import (
+    consume_receipt,
+    discard_receipt,
+    ensure_slot_available,
+    publish_receipt,
+)
 from muser_vllm import dflash_capture, exact_rope, native_capture, rope_cache
 from muser_vllm.exact_fp4_quant import _disable_fused_input_quantization
 from muser_vllm.exact_attention import _pack_exact_attention_inputs
@@ -514,6 +520,12 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             consume_receipt()
 
+    def test_abandoned_request_receipt_can_be_discarded(self) -> None:
+        publish_receipt({"ok": True})
+        self.assertTrue(discard_receipt())
+        self.assertFalse(discard_receipt())
+        ensure_slot_available()
+
     def test_adapter_identity_is_canonical_and_source_bound(self) -> None:
         sources = {
             source: format(index + 1, "064x")
@@ -809,8 +821,49 @@ class ResidentContractTests(unittest.TestCase):
         self.assertIn('"selection": "stock-vllm-native-tensor-core"', producer)
         self.assertIn("run_native_startup_warmup(", producer)
         self.assertIn('extra_args={"muser_startup_warmup": True}', producer)
-        self.assertIn('if engine_touched and response["status"] != "ok":', producer)
+        self.assertIn('and response["status"] != "ok"', producer)
+        self.assertIn("and not controlled_abort", producer)
         self.assertIn("os._exit(75)", producer)
+        self.assertIn("request_ids, internal=True", producer)
+        self.assertIn("cancel_requested.set()", producer)
+        self.assertIn("request_cancellation()", producer)
+        self.assertIn("result_box[\"engine_idle\"] = engine_is_idle(engine)", producer)
+        watcher = producer[
+            producer.index("while worker.is_alive()") : producer.index(
+                "if worker.is_alive():"
+            )
+        ]
+        self.assertNotIn("abort_request", watcher)
+        self.assertIn("set_idle(idle_path, True)", producer)
+
+    def test_connector_cancellation_signal_is_explicit_and_resettable(self) -> None:
+        source = (
+            ROOT / "scripts" / "gx10" / "vllm" / "muser_vllm" / "connector.py"
+        ).read_text()
+        self.assertIn("_REQUEST_CANCELLATION = threading.Event()", source)
+        self.assertIn("def clear_request_cancellation()", source)
+        self.assertIn("def request_cancellation()", source)
+        self.assertIn("_REQUEST_CANCELLATION.wait(timeout=0.25)", source)
+
+    def test_resident_idle_check_requires_both_vllm_views_to_be_empty(self) -> None:
+        engine = mock.Mock()
+        engine.llm_engine.get_num_unfinished_requests.return_value = 0
+        engine.llm_engine.has_unfinished_requests.return_value = False
+        self.assertTrue(resident.engine_is_idle(engine))
+        engine.llm_engine.has_unfinished_requests.return_value = True
+        self.assertFalse(resident.engine_is_idle(engine))
+        engine.llm_engine.get_num_unfinished_requests.return_value = 1
+        engine.llm_engine.has_unfinished_requests.return_value = False
+        self.assertFalse(resident.engine_is_idle(engine))
+
+    def test_resident_detects_a_closed_request_client(self) -> None:
+        resident_side, client_side = socket.socketpair()
+        try:
+            self.assertFalse(resident.connection_gone(resident_side))
+            client_side.close()
+            self.assertTrue(resident.connection_gone(resident_side))
+        finally:
+            resident_side.close()
 
     def test_connector_uses_attention_physical_slot_mapping(self) -> None:
         source = (
@@ -824,10 +877,26 @@ class ResidentContractTests(unittest.TestCase):
         self.assertIn('self._producer_mode = "exact" if exact_flag == "1" else "native"', source)
         self.assertIn('if self._producer_mode == "native":', source)
         self.assertIn('extra_args.get("muser_startup_warmup") is True', source)
+        self.assertNotIn("self._send_queue.join()", source)
+        self.assertIn("sender.interrupt()", source)
         self.assertIn('"host_materialize_hash"', source)
         self.assertIn("key = key.index_select(-1, order)", source)
         self.assertIn("return torch.stack((key, value), dim=0)", source)
         self.assertNotIn("key = key.reshape(", source)
+
+    def test_deferred_sender_abort_emits_one_terminal_frame(self) -> None:
+        sender = object.__new__(llamacpp_v2.DeferredHandoffV2Sender)
+        sender._closed = False
+        sender._committed = False
+        sender._wire_trace = None
+        sender._wire = mock.Mock()
+        with mock.patch.object(llamacpp_v2, "write_frame") as write_frame:
+            sender.abort("fixture abort")
+            sender.close()
+        write_frame.assert_called_once_with(
+            sender._wire, {"kind": "abort", "reason": "fixture abort"}
+        )
+        sender._wire.close.assert_called_once_with()
 
     def test_native_benchmark_refuses_exact_patches_and_warms_full_shape(self) -> None:
         source = (
@@ -856,6 +925,12 @@ class ResidentContractTests(unittest.TestCase):
         self.assertNotIn("--torch-backend=cu129", dockerfile)
         self.assertNotIn("transformers==5.15.0", dockerfile)
         self.assertIn("sha256:95c498a475142c20c989c65e5d223348", receipt)
+
+    def test_native_request_client_stays_duplex_for_disconnect_watchdog(self) -> None:
+        source = (
+            ROOT / "scripts" / "gx10" / "vllm" / "request_producer.py"
+        ).read_text()
+        self.assertNotIn("client.shutdown(", source)
 
     def test_fast_qualifier_observes_eee_without_mutating_the_link(self) -> None:
         source = (ROOT / "scripts" / "qualify_nvfp4_fast.py").read_text()

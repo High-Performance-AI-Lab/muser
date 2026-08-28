@@ -13,9 +13,11 @@ step is not implemented yet, it is not described as done.
 Operational authorization is deliberately separate from capability. On
 2026-08-24, fresh CLI enrollments passed all seven progress labels for both
 declared recipes: native/text in attempt 9 and combined target-plus-DFlash in
-attempt 31. Both transitioned to `healthy`, and both restored the canonical
-resident afterward. Those retained runs do not authorize a later agent to run
-`node add`, `daemon`, or `smoke`; each remains a mutating operator action.
+attempt 31. The native/text recipe is the shipped default; the combined
+kquant recipe is explicitly selected research. Both transitioned to `healthy`,
+and both restored the canonical resident afterward. Those retained runs do not
+authorize a later agent to run `node add`, `daemon`, or `smoke`; each remains a
+mutating operator action.
 
 The dashboard wizard requires the API key configured with the server's
 `--api-key-file`. On HTTPS it exchanges the key for a Secure, HttpOnly,
@@ -30,9 +32,13 @@ CLI path does not use the HTTP management API.
   (agent or keychain identity, or an explicit `--key`). BatchMode is always
   on: if the node would prompt for a password, onboarding fails closed
   rather than hang or fall back to one.
-- The node itself: **aarch64**, an **NVIDIA driver**, and **docker**
-  present and reachable over that same SSH session. Preflight checks for
-  all three before anything is copied or run.
+- The node itself: **aarch64 GB10/SM121**, at least **96 GiB memory** and
+  **64 GiB free disk**, a 580-series or newer **NVIDIA driver**, **docker**,
+  `curl`, `sha256sum`, and `zstd`, all reachable over that same SSH session.
+  Preflight checks the complete set before anything is copied or run.
+- At least **48 GiB free on the Mac during first install**. The final native GGUF
+  is 19.6 GB; independently verified release chunks are retained across a
+  retry and removed after the atomic assembly succeeds.
 
 Nothing else is asked for. No manual key exchange, no hand-typed lane paths,
 no separately-run llama.cpp prefill daemon config.
@@ -57,20 +63,24 @@ failing check. No files are copied to the node at this step.
 
 ### 2. `deploy`
 
-Pushes the pinned runtime container (`container_image`, a `sha256:...` id —
-never a mutable tag) to the node's docker and records the local
-`container_receipt` proving what was pushed and verified. Creates the
-node's `lane_dir`, a remote absolute path that everything else in this
-pipeline (model weights, sockets, the daemon's working state) lives under.
+Pulls the pinned runtime container and requires its exact `sha256:...` image
+ID, never merely a mutable tag. If the registry is unavailable or private, it
+resume-downloads the public split image archive, verifies every chunk and the
+complete compressed stream, loads it, and requires the same image ID. It then
+records the local `container_receipt` proving what was verified. Creates the
+node's `lane_dir`, a remote absolute path that everything else in this pipeline
+(model weights, sockets, the daemon's working state) lives under.
 Registry: `container_image`, `container_receipt`, `lane_dir` written;
 `state` becomes `deployed`.
 
 ### 3. `model`
 
-Gets the pinned target and DFlash GGUFs onto the node under `lane_dir`,
-verifying their byte sizes and SHA-256 values against the same pinned artifact
-manifest used locally (see `docs/release-artifacts.json`). Refuses to hand an
-artifact to the daemon on a mismatch.
+For the shipped native lane, resume-downloads the pinned native NVFP4 decode
+GGUF to the Mac when absent, verifies every release chunk and the assembled
+artifact, and acquires every file of the immutable RedHatAI NVFP4 checkpoint
+on the node. It checks byte sizes, per-file SHA-256 values, and both aggregate
+identities. For the explicitly selected llama.cpp research lane, it installs
+the pinned target and DFlash GGUFs. No mismatched artifact reaches the daemon.
 
 ### 4. `enroll`
 
@@ -115,8 +125,8 @@ prompt and 256 output tokens:
 
 - `native/text`: exact target tokens and the identity's bounded full-logit
   drift policy; no DFlash identity or token trace is admitted;
-- `kquant/target-plus-dflash`: exact target tokens, exact required full
-  logits, and exact DFlash tokens and trace.
+- `kquant/target-plus-dflash` (research lane only): exact target tokens,
+  exact required full logits, and exact DFlash tokens and trace.
 
 An identity with no known recipe is refused at enrollment. Every retained
 sample must bind the run identity and report positive installed
@@ -144,9 +154,9 @@ those KV planes:
 
 ```sh
 MUSER_CROSS_VENDOR_QK=1 muser serve \
-  --model ~/.muser/models/muse-glimmer-30B-kquant-17gb.gguf \
+  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
   --prefill remote \
-  --cluster-config ~/.muser/nodes/<name>/cluster.json
+  --cluster-config ~/.muser/nodes/host/cluster.json
 ```
 
 `--prefill auto` has the same requirement. Both modes refuse startup when

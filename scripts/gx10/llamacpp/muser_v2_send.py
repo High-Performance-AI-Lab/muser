@@ -1104,10 +1104,27 @@ class DeferredHandoffV2Sender:
     def abort(self, reason: str = "producer failure") -> None:
         if self._closed:
             return
+        self._closed = True
         try:
             write_frame(self._wire, {"kind": "abort", "reason": reason})
+        except Exception:
+            pass
         finally:
-            self.close()
+            self._wire.close()
+            self._dump_wire_trace()
+
+    def interrupt(self) -> None:
+        """Unblock the socket owner without racing it with a protocol write."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._wire.shutdown(socket.SHUT_RDWR)
+        except (OSError, ssl.SSLError):
+            pass
+        finally:
+            self._wire.close()
+            self._dump_wire_trace()
 
     def _dump_wire_trace(self) -> None:
         """Emit the gated per-segment trace as stderr JSONL, then drop it.

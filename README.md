@@ -76,15 +76,30 @@ retained rejection receipts. Full model: [`docs/kvpack.md`](docs/kvpack.md).
 ## Quickstart
 
 ```sh
-git clone <muser-repo-url> muser && cd muser
+git clone https://github.com/High-Performance-AI-Lab/muser.git && cd muser
 cargo build --release
 
-# One-button: resolve the pinned Hugging Face repo and stream its pinned GGUF
-# into ~/.muser/models (verifying size + SHA-256),
-# serve, and open the dashboard.
-MUSER_GGML_METALLIB=/path/to/pinned-llama.metallib \
-  ./target/release/muser up
+# Shipped topology: enroll one reachable GB10/GX10 producer. This downloads
+# the native Mac NVFP4 artifact, deploys the pinned producer image, provisions
+# mTLS/HMAC, and refuses success until three real handoffs pass.
+./target/release/muser node add user@host
+
+# Start Mac Metal decode with remote NVFP4 prefill.
+MUSER_CROSS_VENDOR_QK=1 ./target/release/muser serve \
+  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
+  --prefill remote \
+  --cluster-config ~/.muser/nodes/host/cluster.json
 ```
+
+First install needs 48 GiB free on the selected Mac model volume. The 19.6 GB
+artifact is split into independently hashed release chunks;
+completed chunks survive a retry, and the assembled file is published only
+after its final SHA-256 matches. The 7 MB source-pinned Metal runtime is also
+resolved automatically. If an anonymous container-registry pull is
+unavailable, deployment falls back to an equally pinned public image archive
+and still requires the exact Docker image ID. The Mac-only `muser up` path
+remains available as the kquant reference lane; kquant+DFlash is research, not
+the default producer.
 
 Then use any OpenAI-compatible client at `http://127.0.0.1:4949`:
 
@@ -156,11 +171,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-Metal-enabled builds require `MUSER_GGML_METALLIB` to point at the
-source-pinned llama.cpp metallib (the build fails closed without it);
-`--no-default-features` gives a CPU-only correctness path. Anything touching
-the GPU in this repo's lab runs through `scripts/accelerator_safe.py`
-(dry-run by default, `--execute` to run).
+Metal serving resolves the SHA-pinned llama.cpp metallib and source receipt on
+first use; `MUSER_GGML_METALLIB` can override the location but not the pinned
+identity. `--no-default-features` gives a CPU-only correctness path. Anything
+touching the GPU in this repo's lab runs through
+`scripts/accelerator_safe.py` (dry-run by default, `--execute` to run).
 
 ## Documentation
 
@@ -182,4 +197,6 @@ Expect rough edges; expect the numbers above to be real and receipted.
 
 Dual-licensed under [`Apache-2.0 OR MIT`](LICENSE-MIT). Extracted code retains
 its source license and is identified in [`NOTICE`](NOTICE). Model weights are
-never committed or bundled.
+not stored in Git. The separately checksummed native NVFP4 consumer artifact
+derives from the Apache-2.0 Muse Glimmer model and is distributed through the
+pinned release named by the onboarding identity.

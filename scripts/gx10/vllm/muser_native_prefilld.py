@@ -34,7 +34,7 @@ SCHEMA = "muser.native-prefilld.v1"
 RUNTIME_SCHEMA = "muser.native-onboarding-identity.v1"
 ROPE_CACHE_SCHEMA = "muser.vllm-rope-cache.v2"
 SOURCE_RUNTIME_IDENTITY_SHA256 = (
-    "59a7e8c919745711d2af537f391e799c48d20148a7e1ecd8c9d7b7a87cf9102e"
+    "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264"
 )
 PRODUCER_CONFIG_SCHEMA = "muser.spark-nvfp4-producer-config.v1"
 PRODUCER_RECEIPT_SCHEMA = "muser.spark-nvfp4-prefill.v2"
@@ -411,6 +411,7 @@ def start_container(config: dict[str, Any]) -> Path:
     stop_container(config)
     for path in (
         config["producer_socket"],
+        Path(f"{config['producer_socket']}.idle"),
         config["startup_receipt"],
         config["rope_cache_output"],
     ):
@@ -483,6 +484,7 @@ def start_container(config: dict[str, Any]) -> Path:
     while time.monotonic() < deadline:
         if (
             config["producer_socket"].is_socket()
+            and Path(f"{config['producer_socket']}.idle").is_file()
             and config["startup_receipt"].is_file()
             and config["rope_cache_output"].is_file()
         ):
@@ -502,6 +504,101 @@ def start_container(config: dict[str, Any]) -> Path:
             )
         time.sleep(0.5)
     raise NativePrefilldError("native container did not become ready before timeout")
+
+
+def recover_container(config: dict[str, Any], reason: str) -> None:
+    """Discard an in-flight engine and restore one known-ready producer.
+
+    A failed ``docker exec`` is not sufficient cancellation: the resident
+    vLLM process may still own the GPU and its single request slot. Replacing
+    the container is the bounded recovery boundary for an abandoned request.
+    """
+    try:
+        start_container(config)
+    except Exception as error:
+        raise NativePrefilldError(
+            f"{reason}; native producer recovery failed: {error}"
+        ) from error
+
+
+def cancel_inner_request(config: dict[str, Any], transfer_id: str) -> bool:
+    """Cancel only the request process and wait for verified warm-engine idle."""
+    pattern = rf"[r]equest_producer\.py.*--request-id {transfer_id}"
+    docker(
+        config,
+        "exec",
+        config["container_name"],
+        "pkill",
+        "-TERM",
+        "-f",
+        pattern,
+        check=False,
+    )
+    idle_path = Path(f"{config['producer_socket']}.idle")
+    # With in-process vLLM the resident cannot safely preempt an active CUDA
+    # forward from the watcher thread. It notices the closed client, lets the
+    # current engine step reach a safe boundary, aborts on that same thread,
+    # and only then publishes the idle marker. The qualified 128K prefill is
+    # below this bound; failure still falls back to an exact container restart.
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if container_running(config) and idle_path.is_file():
+            return True
+        if not container_running(config):
+            return False
+        time.sleep(0.05)
+    return False
+
+
+def run_controlled_command(
+    config: dict[str, Any],
+    command: list[str],
+    control_stream: object,
+    transfer_id: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one request while the receiver's control stream remains alive."""
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + config["timeout_seconds"] + 30
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            process.kill()
+            process.communicate()
+            if cancel_inner_request(config, transfer_id):
+                raise NativePrefilldError(
+                    "native producer request timed out; request canceled and warm "
+                    "producer retained"
+                )
+            recover_container(config, "warm request timeout cancellation did not reach idle")
+            raise NativePrefilldError(
+                "native producer request timed out; warm cancel failed and "
+                "resident producer restarted"
+            )
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+            return subprocess.CompletedProcess(
+                command, process.returncode, stdout, stderr
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        if control.receiver_gone(control_stream):
+            process.kill()
+            process.communicate()
+            if cancel_inner_request(config, transfer_id):
+                raise NativePrefilldError(
+                    "receiver went away before native prefill finished; "
+                    "request canceled and warm producer retained"
+                )
+            recover_container(config, "warm request cancellation did not reach idle")
+            raise NativePrefilldError(
+                "receiver went away before native prefill finished; warm cancel "
+                "failed and resident producer restarted"
+            )
 
 
 def token_digest(tokens: list[int]) -> str:
@@ -590,7 +687,9 @@ def validate_producer_receipt(
     }
 
 
-def run_request(config: dict[str, Any], request: dict[str, Any]) -> dict[str, int]:
+def run_request(
+    config: dict[str, Any], request: dict[str, Any], control_stream: object
+) -> dict[str, int]:
     generation = control.allocate_generation(config["generation_ledger"])
     transfer_id = f"{request['request_id']}-{generation}"
     if len(transfer_id) > 256:
@@ -624,15 +723,12 @@ def run_request(config: dict[str, Any], request: dict[str, Any]) -> dict[str, in
             "--timeout-seconds",
             str(config["timeout_seconds"]),
         ]
-        result = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=config["timeout_seconds"] + 30,
+        result = run_controlled_command(
+            config, command, control_stream, transfer_id
         )
         if result.returncode != 0:
+            if not container_running(config):
+                recover_container(config, "native resident exited after request failure")
             raise NativePrefilldError(
                 f"native producer request failed ({result.returncode}): {result.stderr[-1024:]}"
             )
@@ -647,6 +743,7 @@ def run_request(config: dict[str, Any], request: dict[str, Any]) -> dict[str, in
         )
     finally:
         token_path.unlink(missing_ok=True)
+        receipt_path.unlink(missing_ok=True)
 
 
 def serve(config: dict[str, Any]) -> None:
@@ -658,6 +755,17 @@ def serve(config: dict[str, Any]) -> None:
     listener.listen(8)
     print("muser-native-prefilld: resident producer ready", file=sys.stderr, flush=True)
     while True:
+        # The inner container deliberately has no Docker restart policy: this
+        # bridge owns its identity and readiness checks. Recover before
+        # accepting another request; if recovery itself fails, exit so the
+        # outer service supervisor can restart the whole bridge.
+        if not container_running(config):
+            print(
+                "muser-native-prefilld: resident container is down; restarting",
+                file=sys.stderr,
+                flush=True,
+            )
+            start_container(config)
         try:
             stream = control.accept_control(listener, tls, config)
         except Exception as error:
@@ -671,7 +779,7 @@ def serve(config: dict[str, Any]) -> None:
                 raise NativePrefilldError("native/text producer refuses multimodal control")
             request_id = request["request_id"]
             control.write_frame(stream, control.response(request_id, "accepted"))
-            receipt = run_request(config, request)
+            receipt = run_request(config, request, stream)
             control.write_frame(
                 stream,
                 control.response(request_id, "committed", receipt=receipt),

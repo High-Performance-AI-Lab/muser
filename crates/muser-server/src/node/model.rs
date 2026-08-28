@@ -157,10 +157,11 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         ctx.progress.plan(
             Step::Model,
             &format!(
-                "verify the Mac decode artifact {} ({} bytes, {})",
+                "verify or resume-download the Mac decode artifact {} ({} bytes, {}, {} parts)",
                 consumer.display(),
                 identity.consumer.bytes,
-                &identity.consumer.sha256[..12]
+                &identity.consumer.sha256[..12],
+                identity.consumer_parts.len()
             ),
         );
         for file in &identity.checkpoint_files {
@@ -188,12 +189,7 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         return Ok(());
     }
 
-    verify_regular_file(
-        &consumer,
-        identity.consumer.bytes,
-        &identity.consumer.sha256,
-        "native Mac decode artifact",
-    )?;
+    acquire_native_consumer(ctx, &identity, &consumer)?;
     ctx.progress.emit(
         Step::Model,
         Status::Info,
@@ -242,6 +238,82 @@ fn native_source(ctx: &Ctx, artifact: &Artifact) -> String {
     } else {
         configured
     }
+}
+
+fn acquire_native_consumer(
+    ctx: &Ctx,
+    identity: &super::artifacts::NativeIdentity,
+    target: &Path,
+) -> Result<()> {
+    match std::fs::symlink_metadata(target) {
+        Ok(_) => {
+            return verify_regular_file(
+                target,
+                identity.consumer.bytes,
+                &identity.consumer.sha256,
+                "native Mac decode artifact",
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "inspect native Mac decode artifact {}: {error}",
+                target.display()
+            ))
+        }
+    }
+
+    ctx.progress.emit(
+        Step::Model,
+        Status::Info,
+        &format!(
+            "native Mac decode artifact is absent; downloading {} pinned parts ({:.1} GB total)",
+            identity.consumer_parts.len(),
+            identity.consumer.bytes as f64 / 1e9
+        ),
+    );
+    let parts = identity
+        .consumer_parts
+        .iter()
+        .map(|part| {
+            let configured = ctx.model_source(&part.filename);
+            crate::model::PinnedArtifact {
+                filename: part.filename.clone(),
+                revision: part.revision.clone(),
+                url: if configured.is_empty() {
+                    part.url.clone()
+                } else {
+                    configured
+                },
+                bytes: part.bytes,
+                sha256: part.sha256.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let announced = std::cell::Cell::new(0_u64);
+    crate::model::download_pinned_parts(
+        &parts,
+        target,
+        identity.consumer.bytes,
+        &identity.consumer.sha256,
+        |done, total| {
+            let gib = done / (1024 * 1024 * 1024);
+            if gib > announced.get() || done == total {
+                announced.set(gib);
+                ctx.progress.emit(
+                    Step::Model,
+                    Status::Info,
+                    &format!(
+                        "native Mac decode download {:.1}/{:.1} GB",
+                        done as f64 / 1e9,
+                        total as f64 / 1e9
+                    ),
+                );
+            }
+        },
+    )
+    .map_err(|error| format!("download native Mac decode artifact: {error}"))?;
+    Ok(())
 }
 
 pub(super) fn verify_regular_file(

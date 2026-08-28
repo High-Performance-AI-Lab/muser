@@ -9,16 +9,16 @@
     "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
   },
   "producer_image": {
-    "tag": "muser/gx10-vllm-native:593b96a",
-    "image_id": "sha256:578888b29e42138a0821b68f94d952a4acc958660232e53d3ebff3ae9d933750",
-    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-image-593b96a-retrospective-20260823.json",
-    "receipt_sha256": "163783f1f98ae341fc2425409e885b886e54a4274468a263c4476939e3327e45"
+    "tag": "ghcr.io/high-performance-ai-lab/muser-gx10-vllm-native:nvfp4-20260828",
+    "image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/nvfp4-vllm-image-release-final3-20260828.json",
+    "receipt_sha256": "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6"
   },
   "vllm_overlay": {
-    "adapter_sha256": "c49c171ffdeaa34fcff5a9be80af3256be245ed81902ce35d97cc825e197d1f7",
+    "adapter_sha256": "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
     "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    "receipt": "muser-build-receipt://nvfp4-fast-f1-20260817/spark-adapter-593b96a-retrospective-20260823.json",
-    "receipt_sha256": "695f9ad0941181123b1bdc4eaea4db2f2249f7a18fd45217c92b328652b45e68"
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/spark-producer-adapter-release-final3-20260828.json",
+    "receipt_sha256": "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2"
   },
   "evidence": [
     "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",

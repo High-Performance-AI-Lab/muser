@@ -19,6 +19,15 @@ mod registry;
 pub use manifest::PinnedArtifact;
 
 pub const TARGET_ARTIFACT: &str = "target";
+pub const LLAMA_CPP_COMMIT: &str = "89e0aa6fd362617d9073e0dafc18e41241521572";
+pub const GGML_METALLIB_BYTES: u64 = 7_314_848;
+pub const GGML_METALLIB_SHA256: &str =
+    "c018ab9c01c18bf79a83272d25973a981138bdeec9ac677e63afef07b21ac033";
+pub const GGML_METALLIB_RECEIPT_BYTES: u64 = 1_041;
+pub const GGML_METALLIB_RECEIPT_SHA256: &str =
+    "29ae842f2f778260fc63b6c51769312264195811d71e8d50c2e93c3d4003deb0";
+const RUNTIME_ASSET_BASE: &str =
+    "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1";
 
 pub struct ResolvedModel {
     pub path: PathBuf,
@@ -125,28 +134,202 @@ pub fn pinned_artifact_for_repository(
     registry::resolve(repository, name)
 }
 
+/// Download independently pinned chunks and publish their concatenation only
+/// after both the per-chunk and whole-file identities verify. Completed chunks
+/// remain beside the destination after an interrupted run, so retrying a
+/// multi-gigabyte release does not start from byte zero.
+pub fn download_pinned_parts(
+    parts: &[PinnedArtifact],
+    target: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    progress: impl Fn(u64, u64),
+) -> Result<u64, ModelError> {
+    if parts.is_empty() || !lower_hex(expected_sha256, 64) {
+        return Err(ModelError::Manifest(
+            "multipart artifact has no parts or an invalid final SHA-256".into(),
+        ));
+    }
+    let total = parts.iter().try_fold(0_u64, |sum, part| {
+        sum.checked_add(part.bytes)
+            .ok_or_else(|| ModelError::Manifest("multipart byte count overflow".into()))
+    })?;
+    if total != expected_bytes {
+        return Err(ModelError::Manifest(format!(
+            "multipart artifact totals {total} bytes, expected {expected_bytes}"
+        )));
+    }
+    download::download_parts(parts, target, expected_bytes, expected_sha256, progress)
+}
+
 pub fn default_model_path() -> Result<PathBuf, ModelError> {
     default_model_path_from(std::env::var_os("MUSER_HOME"), std::env::var_os("HOME"))
+}
+
+pub fn default_metallib_path() -> Result<PathBuf, ModelError> {
+    Ok(
+        muser_root_from(std::env::var_os("MUSER_HOME"), std::env::var_os("HOME"))?
+            .join("runtime")
+            .join("llama-metal-89e0aa6fd362")
+            .join("llama.metallib"),
+    )
+}
+
+/// Resolve the source-pinned llama.cpp Metal library used by the few GGML
+/// kernels in the Mac decoder. An explicit environment path remains valid;
+/// otherwise a clean checkout downloads the 7 MB release artifact and its
+/// source receipt, with both identities pinned in the binary.
+pub fn ensure_metallib(explicit: Option<&Path>) -> Result<PathBuf, ModelError> {
+    if let Some(path) = explicit {
+        let path = path.canonicalize().map_err(|source| io_err(path, source))?;
+        let receipt = path.with_file_name("source-receipt.json");
+        validate_metallib(&path, &receipt)?;
+        return Ok(path);
+    }
+
+    let path = default_metallib_path()?;
+    let receipt = path.with_file_name("source-receipt.json");
+    let release_assets = [
+        (
+            &path,
+            PinnedArtifact {
+                filename: "llama-metal-89e0aa6fd362.metallib".into(),
+                revision: LLAMA_CPP_COMMIT.into(),
+                url: format!("{RUNTIME_ASSET_BASE}/llama-metal-89e0aa6fd362.metallib"),
+                bytes: GGML_METALLIB_BYTES,
+                sha256: GGML_METALLIB_SHA256.into(),
+            },
+        ),
+        (
+            &receipt,
+            PinnedArtifact {
+                filename: "llama-metal-89e0aa6fd362-source-receipt.json".into(),
+                revision: LLAMA_CPP_COMMIT.into(),
+                url: format!("{RUNTIME_ASSET_BASE}/llama-metal-89e0aa6fd362-source-receipt.json"),
+                bytes: GGML_METALLIB_RECEIPT_BYTES,
+                sha256: GGML_METALLIB_RECEIPT_SHA256.into(),
+            },
+        ),
+    ];
+    for (target, artifact) in release_assets {
+        if !target.exists() {
+            download_pinned_parts(
+                std::slice::from_ref(&artifact),
+                target,
+                artifact.bytes,
+                &artifact.sha256,
+                |_, _| {},
+            )?;
+        }
+    }
+    validate_metallib(&path, &receipt)?;
+    Ok(path)
+}
+
+/// Bind the verified metallib into the process before any Metal device is
+/// created. This is a no-op for CPU-only/non-macOS builds.
+pub fn activate_metallib() -> Result<Option<PathBuf>, ModelError> {
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    {
+        let path = match std::env::var_os("MUSER_GGML_METALLIB") {
+            Some(value) => {
+                let path = PathBuf::from(value)
+                    .canonicalize()
+                    .map_err(|source| io_err(Path::new("MUSER_GGML_METALLIB"), source))?;
+                let receipt = std::env::var_os("MUSER_GGML_METALLIB_RECEIPT")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| path.with_file_name("source-receipt.json"));
+                validate_metallib(&path, &receipt)?;
+                path
+            }
+            None => ensure_metallib(None)?,
+        };
+        std::env::set_var("MUSER_GGML_METALLIB", &path);
+        Ok(Some(path))
+    }
+    #[cfg(not(all(target_os = "macos", feature = "metal")))]
+    {
+        Ok(None)
+    }
+}
+
+pub fn validate_metallib(path: &Path, receipt_path: &Path) -> Result<(), ModelError> {
+    for candidate in [path, receipt_path] {
+        let metadata =
+            std::fs::symlink_metadata(candidate).map_err(|source| io_err(candidate, source))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(ModelError::Manifest(format!(
+                "Metal runtime artifact is not a regular file: {}",
+                candidate.display()
+            )));
+        }
+    }
+    let receipt_bytes =
+        std::fs::read(receipt_path).map_err(|source| io_err(receipt_path, source))?;
+    let receipt_digest = hex(&Sha256::digest(&receipt_bytes));
+    if receipt_bytes.len() as u64 != GGML_METALLIB_RECEIPT_BYTES
+        || receipt_digest != GGML_METALLIB_RECEIPT_SHA256
+    {
+        return Err(ModelError::ChecksumMismatch {
+            path: receipt_path.to_path_buf(),
+            expected: GGML_METALLIB_RECEIPT_SHA256.into(),
+            actual: receipt_digest,
+        });
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&receipt_bytes)
+        .map_err(|error| ModelError::Manifest(format!("Metal source receipt: {error}")))?;
+    let metadata = std::fs::metadata(path).map_err(|source| io_err(path, source))?;
+    let digest = sha256_file(path)?;
+    if metadata.len() != GGML_METALLIB_BYTES
+        || digest != GGML_METALLIB_SHA256
+        || receipt.get("schema").and_then(serde_json::Value::as_str)
+            != Some("muser.llama_metallib.source_receipt.v1")
+        || receipt
+            .get("source_commit")
+            .and_then(serde_json::Value::as_str)
+            != Some(LLAMA_CPP_COMMIT)
+        || receipt
+            .get("binary_size_bytes")
+            .and_then(serde_json::Value::as_u64)
+            != Some(GGML_METALLIB_BYTES)
+        || receipt
+            .get("binary_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(GGML_METALLIB_SHA256)
+    {
+        return Err(ModelError::ChecksumMismatch {
+            path: path.to_path_buf(),
+            expected: GGML_METALLIB_SHA256.into(),
+            actual: digest,
+        });
+    }
+    Ok(())
 }
 
 fn default_model_path_from(
     muser_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Result<PathBuf, ModelError> {
-    let root = if let Some(value) = muser_home {
+    Ok(muser_root_from(muser_home, home)?
+        .join("models")
+        .join(pinned_artifact(TARGET_ARTIFACT)?.filename))
+}
+
+fn muser_root_from(
+    muser_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, ModelError> {
+    if let Some(value) = muser_home {
         if value.is_empty() {
             return Err(ModelError::Manifest("MUSER_HOME is empty".into()));
         }
-        PathBuf::from(value)
+        Ok(PathBuf::from(value))
     } else {
         let home = home
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ModelError::Manifest("neither MUSER_HOME nor HOME is set".into()))?;
-        PathBuf::from(home).join(".muser")
-    };
-    Ok(root
-        .join("models")
-        .join(pinned_artifact(TARGET_ARTIFACT)?.filename))
+        Ok(PathBuf::from(home).join(".muser"))
+    }
 }
 
 pub fn validate_pinned_artifact(path: &Path, name: &str) -> Result<PinnedArtifact, ModelError> {

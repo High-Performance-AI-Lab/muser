@@ -3,7 +3,17 @@
 All notable changes to Muser are recorded here. Performance figures retain
 the scope and methodology of the linked benchmark sections.
 
-## 0.1.0-beta.1 — 2026-08-24
+## 0.1.0-beta.1 — 2026-08-28
+
+- Fresh remote nodes select the shipped NVFP4 vLLM producer lane. Onboarding
+  now resolves the split Mac consumer, source-pinned Metal runtime, immutable
+  GX10 image, and checkpoint without operator-supplied build artifacts.
+- Receiver loss cancels abandoned producer work, verifies the warm engine is
+  idle before reuse, and restarts the exact image when bounded cancellation
+  cannot prove recovery.
+- Native prompt budgets scale through the receipted 128k path. The slower
+  kquant+DFlash lane remains available as explicitly selected research and
+  keeps its measured 4,096-token onboarding envelope.
 
 - The [six-depth plain local matrix](docs/benchmarks.md#1-plain-local-decode-and-prefill-no-speculation)
   matched or beat the pinned llama.cpp comparator on mean decode and prefill
