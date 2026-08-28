@@ -1713,6 +1713,12 @@ impl RemotePrefillRuntime {
         self.mode
     }
 
+    /// Deepest prompt the remote lane will attempt; deeper prompts prefill
+    /// locally instead of starving the producer-wait budget.
+    pub fn max_prompt_tokens(&self) -> usize {
+        self.receiver.config().remote_max_prompt_tokens
+    }
+
     /// `(src_node, dst_node)` read from the live receiver configuration: the
     /// configured producer control endpoint is the source, the advertised or
     /// bound receive address is the destination.

@@ -60,8 +60,24 @@ pub enum RemoteReceiveCause {
     Install,
 }
 
+impl RemoteReceiveCause {
+    /// Stable phase label carried into every surfaced error message: a
+    /// timeout that names its phase is diagnosable from the receiver alone,
+    /// without correlating producer-side journals.
+    pub fn phase(self) -> &'static str {
+        match self {
+            RemoteReceiveCause::Receiver => "receiver refusal",
+            RemoteReceiveCause::Control => "producer control channel",
+            RemoteReceiveCause::AcceptTimeout => "waiting for the producer connection",
+            RemoteReceiveCause::Verify => "producer verification",
+            RemoteReceiveCause::Transfer => "mid-transfer",
+            RemoteReceiveCause::Install => "engine install",
+        }
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{message}")]
+#[error("{} ({})", .message, .cause.phase())]
 pub struct RemoteReceiveError {
     pub cause: RemoteReceiveCause,
     pub message: String,
@@ -360,8 +376,20 @@ impl RemoteReceiver {
             );
             (committed, install_failed)
         };
-        let committed = committed
-            .map_err(|error| RemoteReceiveError::from_receive(error, install_failed.is_set()))?;
+        let committed = committed.map_err(|error| {
+            let mut mapped = RemoteReceiveError::from_receive(error, install_failed.is_set());
+            // Stamp where the time went: without this, a timeout here is
+            // indistinguishable from one in control or accept, and the phase
+            // has to be reconstructed from producer-side journals.
+            mapped.message = format!(
+                "{} [control {}ms, accept {}ms, {}ms into the transfer]",
+                mapped.message,
+                control_ns / 1_000_000,
+                accept_ns / 1_000_000,
+                transfer_started.elapsed().as_millis()
+            );
+            mapped
+        })?;
         let transfer_commit_ns = nanos(transfer_started.elapsed());
         let mut producer = None;
         if let Some(stream) = control.as_mut() {
@@ -441,8 +469,15 @@ impl RemoteReceiver {
             MUSER_PREFILL_CONTROL_ALPN,
         )
         .map_err(|error| error.to_string())?;
+        // The deadline the producer is told must match the patience this
+        // receiver will actually extend to the transfer, which scales with
+        // prompt depth; the flat timeout only suits shallow prompts.
         let deadline_unix_ms = now_unix_ms
-            .checked_add(self.config.timeout_ms)
+            .checked_add(
+                self.config
+                    .producer_wait_for(prompt_witnesses.len())
+                    .as_millis() as u64,
+            )
             .ok_or_else(|| "control deadline overflow".to_string())?;
         if let Some((identity, segments)) = multimodal {
             let request = PrefillControlRequestV2 {

@@ -32,6 +32,13 @@ pub struct ReceiverConfigV2 {
     pub replay_ledger: PathBuf,
     pub timeout_ms: u64,
     pub wait_for_producer_ms: u64,
+    /// Deepest prompt the remote lane will attempt. Beyond this the receiver
+    /// prefills locally: at the measured ~150 ms/token producer rate
+    /// (2026-08-28, GB10 kquant+DFlash), deeper prompts cannot finish inside
+    /// the 900 s protocol ceiling, so attempting them buys a guaranteed
+    /// timeout instead of a transfer.
+    #[serde(default = "default_remote_max_prompt_tokens")]
+    pub remote_max_prompt_tokens: usize,
     #[serde(default)]
     pub advertised_receiver_host: Option<String>,
     #[serde(default)]
@@ -47,6 +54,10 @@ pub struct ReceiverConfigV2 {
     /// can never silently substitute its own window.
     #[serde(default)]
     pub dflash_context_geometry: Option<DFlashContextGeometry>,
+}
+
+fn default_remote_max_prompt_tokens() -> usize {
+    4096
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,12 +99,16 @@ impl ReceiverConfigV2 {
 
     /// Producer wait scaled to the requested depth. The configured wait is
     /// the floor; deep prompts earn more patience, because the kquant-lane
-    /// producer was measured prefilling ~12.8k tokens in about six minutes
-    /// (2026-08-28) — past any flat budget that suits shallow prompts. The
-    /// allowance is 35 ms per prompt token (a ~28 tok/s worst-case
-    /// producer), capped at the 900 s config ceiling.
+    /// producer needs minutes, not seconds, past any flat budget that suits
+    /// shallow prompts. Measured 2026-08-28 on the GB10 kquant+DFlash lane:
+    /// a 1,027-token request completed end to end in 194.8 s (~150 ms per
+    /// token, exporter compute dominated; batch size made no difference),
+    /// and 2k/12.8k requests starved every smaller budget. The allowance is
+    /// 200 ms per prompt token (~1.3x measured), capped at the 900 s config
+    /// ceiling; prompts whose honest budget would blow that ceiling belong
+    /// on the local lane (`remote_max_prompt_tokens`).
     pub fn producer_wait_for(&self, prompt_tokens: usize) -> Duration {
-        let scaled = Duration::from_millis((prompt_tokens as u64).saturating_mul(35));
+        let scaled = Duration::from_millis((prompt_tokens as u64).saturating_mul(200));
         self.producer_wait()
             .max(scaled)
             .min(Duration::from_millis(900_000))
