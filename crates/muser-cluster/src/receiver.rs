@@ -541,7 +541,16 @@ impl RemoteReceiver {
         set_read_timeout(&stream, admission)?;
         let admission = read_begin_v2(&mut stream, FrameLimitsV2::default())
             .map_err(|error| error.to_string())?;
-        set_read_timeout(&stream, self.config.timeout())?;
+        // The producer connects and sends its begin within milliseconds, then
+        // computes prefill before the first segment appears — for deep prompts
+        // that compute was measured in minutes. The transfer reads must carry
+        // the same depth-scaled patience as the accept wait, not the flat
+        // config timeout, or a deep prefill dies here while the producer is
+        // honestly working.
+        let transfer_read = deadline
+            .saturating_duration_since(Instant::now())
+            .max(self.config.timeout());
+        set_read_timeout(&stream, transfer_read)?;
         Ok((stream, admission))
     }
 
