@@ -237,6 +237,20 @@ def stop_warm_exporter(config: dict) -> None:
     )
 
 
+def restart_warm_exporter(config: dict) -> None:
+    """The only cancel the resident exporter has. A job whose consumer is gone
+    keeps the GPU busy until it finishes on its own; restarting the exporter
+    reclaims it now, and the reload happens immediately so the next request
+    meets a warming exporter instead of a wedged one."""
+    model, mmproj, dflash = config["_warm_args"]
+    print(
+        "muser-prefilld: restarting the warm exporter to cancel an abandoned job",
+        file=sys.stderr,
+        flush=True,
+    )
+    start_warm_exporter(config, model, mmproj, dflash)
+
+
 def exporter_logs(config: dict) -> str:
     probe = subprocess.run(
         [str(config["container_runtime"]), "logs", "--tail", "200", WARM_CONTAINER],
@@ -290,7 +304,9 @@ def start_warm_exporter(
     raise PrefilldError("warm exporter did not become ready before timeout")
 
 
-def wait_job_status(config: dict, status_path: Path, timeout_seconds: int) -> str:
+def wait_job_status(
+    config: dict, status_path: Path, timeout_seconds: int, sender=None
+) -> str:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if status_path.is_file():
@@ -298,6 +314,13 @@ def wait_job_status(config: dict, status_path: Path, timeout_seconds: int) -> st
         if not container_running(config):
             raise PrefilldError(
                 f"warm exporter exited during a job: {exporter_logs(config)[-1024:]}"
+            )
+        if sender is not None and sender.poll() is not None:
+            # The sender dies when the receiver hangs up. Nobody will consume
+            # this job's output; waiting out the full budget would wedge the
+            # daemon for every request behind it.
+            raise PrefilldError(
+                "receiver went away before the job finished; canceling the abandoned prefill"
             )
         time.sleep(0.05)
     raise PrefilldError("warm exporter job timed out")
@@ -940,10 +963,13 @@ def run_request(
             jobs.write(f"{job_path.resolve()}\n")
             jobs.flush()
         try:
-            status = wait_job_status(config, status_path, config["timeout_seconds"])
+            status = wait_job_status(
+                config, status_path, config["timeout_seconds"], sender=sender
+            )
         except PrefilldError:
             sender.kill()
             sender.communicate()
+            restart_warm_exporter(config)
             raise subprocess.CalledProcessError(
                 1,
                 [str(config["container_runtime"])],
@@ -1131,6 +1157,7 @@ def main() -> None:
         time.sleep(0.2)
     gpu_lease = acquire_gpu_lease()
     try:
+        config["_warm_args"] = (args.model, args.mmproj, args.dflash)
         start_warm_exporter(config, args.model, args.mmproj, args.dflash)
         print("muser-prefilld: warm exporter ready", file=sys.stderr, flush=True)
         context = tls_context(config)

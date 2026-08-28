@@ -86,6 +86,19 @@ impl ReceiverConfigV2 {
         Duration::from_millis(self.wait_for_producer_ms)
     }
 
+    /// Producer wait scaled to the requested depth. The configured wait is
+    /// the floor; deep prompts earn more patience, because the kquant-lane
+    /// producer was measured prefilling ~12.8k tokens in about six minutes
+    /// (2026-08-28) — past any flat budget that suits shallow prompts. The
+    /// allowance is 35 ms per prompt token (a ~28 tok/s worst-case
+    /// producer), capped at the 900 s config ceiling.
+    pub fn producer_wait_for(&self, prompt_tokens: usize) -> Duration {
+        let scaled = Duration::from_millis((prompt_tokens as u64).saturating_mul(35));
+        self.producer_wait()
+            .max(scaled)
+            .min(Duration::from_millis(900_000))
+    }
+
     fn validate(&self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err("cluster config schema_version must be 1".into());

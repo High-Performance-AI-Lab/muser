@@ -272,7 +272,7 @@ impl RemoteReceiver {
             .map_err(|message| RemoteReceiveError::new(RemoteReceiveCause::Control, message))?;
         let control_ns = nanos(control_started.elapsed());
         let wait = if control.is_some() || wait_without_control {
-            self.config.producer_wait()
+            self.config.producer_wait_for(prompt_witnesses.len())
         } else {
             Duration::ZERO
         };
