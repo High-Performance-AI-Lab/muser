@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import select
 import signal
 import socket
 import ssl
@@ -304,8 +305,36 @@ def start_warm_exporter(
     raise PrefilldError("warm exporter did not become ready before timeout")
 
 
+def receiver_gone(control) -> bool:
+    """The receiver holds its control connection open, silent, for the whole
+    job; the sender may sit in a FIFO open and never touch its socket, so the
+    control stream is the only liveness signal that fires while the exporter
+    is still computing. Any traffic here mid-job — close, reset, or bytes —
+    means the receiver is no longer waiting for this job's output."""
+    try:
+        readable, _, _ = select.select([control], [], [], 0)
+    except (OSError, ValueError):
+        return True
+    if not readable:
+        return False
+    previous = control.gettimeout()
+    try:
+        control.settimeout(0.2)
+        control.recv(4096)
+    except (ssl.SSLWantReadError, TimeoutError):
+        return False
+    except (ssl.SSLError, OSError):
+        return True
+    finally:
+        try:
+            control.settimeout(previous)
+        except OSError:
+            pass
+    return True
+
+
 def wait_job_status(
-    config: dict, status_path: Path, timeout_seconds: int, sender=None
+    config: dict, status_path: Path, timeout_seconds: int, sender=None, control=None
 ) -> str:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -315,10 +344,16 @@ def wait_job_status(
             raise PrefilldError(
                 f"warm exporter exited during a job: {exporter_logs(config)[-1024:]}"
             )
-        if sender is not None and sender.poll() is not None:
-            # The sender dies when the receiver hangs up. Nobody will consume
-            # this job's output; waiting out the full budget would wedge the
-            # daemon for every request behind it.
+        sender_done = sender is not None and sender.poll() is not None
+        if sender_done and sender.returncode == 0:
+            # The transfer is delivered and acked: the sender exits 0 only
+            # after the receiver's handoff ACK, and the receiver may drop its
+            # control stream the moment it commits. Neither is abandonment —
+            # only the exporter's own status file is still owed.
+            pass
+        elif sender_done or (control is not None and receiver_gone(control)):
+            # Nobody will consume this job's output; waiting out the full
+            # budget would wedge the daemon for every request behind it.
             raise PrefilldError(
                 "receiver went away before the job finished; canceling the abandoned prefill"
             )
@@ -828,6 +863,7 @@ def run_request(
     mmproj: Path | None,
     dflash: Path | None,
     request: dict,
+    control=None,
 ) -> dict:
     token_path = None
     dflash_session_path = None
@@ -964,17 +1000,35 @@ def run_request(
             jobs.flush()
         try:
             status = wait_job_status(
-                config, status_path, config["timeout_seconds"], sender=sender
+                config,
+                status_path,
+                config["timeout_seconds"],
+                sender=sender,
+                control=control,
             )
-        except PrefilldError:
+        except PrefilldError as cancel:
             sender.kill()
-            sender.communicate()
+            sender_stdout, sender_stderr = sender.communicate()
+            # The restart below destroys the only copy of the exporter's
+            # output; capture the post-mortem first, or every canceled job
+            # is undiagnosable after the fact.
+            postmortem = exporter_logs(config)[-2000:]
+            print(
+                f"muser-prefilld: canceling job: {cancel}\n"
+                f"muser-prefilld: exporter tail before restart:\n{postmortem}\n"
+                f"muser-prefilld: sender tail: {(sender_stderr or sender_stdout or '')[-1500:]}",
+                file=sys.stderr,
+                flush=True,
+            )
             restart_warm_exporter(config)
+            # A canceled job is a per-request failure. Naming the container
+            # runtime here would read as a device failure and fail-stop the
+            # lane; the exporter restart above already reclaimed the GPU.
             raise subprocess.CalledProcessError(
                 1,
-                [str(config["container_runtime"])],
+                ["abandoned-prefill"],
                 "",
-                exporter_logs(config),
+                postmortem,
             ) from None
         if status != "ok":
             sender.kill()
@@ -1178,7 +1232,9 @@ def main() -> None:
                 request_id = request["request_id"]
                 write_frame(stream, response(request_id, "accepted"))
                 try:
-                    receipt = run_request(config, args.model, args.mmproj, args.dflash, request)
+                    receipt = run_request(
+                        config, args.model, args.mmproj, args.dflash, request, control=stream
+                    )
                 except subprocess.CalledProcessError as error:
                     print(
                         f"muser-prefilld: job {request_id} failed: {error}",
