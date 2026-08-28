@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Checkout Muser
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Python test dependencies
+        run: python3 -m pip install --require-hashes -r scripts/requirements-test.txt
       - name: Run Python suite
         run: python3 -m unittest discover -s scripts/tests
 

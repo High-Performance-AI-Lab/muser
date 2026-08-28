@@ -268,8 +268,10 @@ cmd_model() {
     if [ ${#sha256} -ne 64 ]; then
         fail model "--sha256 must be 64 lowercase hex characters" "" 2
     fi
+    # Spell out the alphabet: locale collation can make the range `a-f`
+    # admit uppercase letters on the stock macOS Bash used by public CI.
     case "$sha256" in
-        *[!0-9a-f]*) fail model "--sha256 must be 64 lowercase hex characters" "" 2 ;;
+        *[!0123456789abcdef]*) fail model "--sha256 must be 64 lowercase hex characters" "" 2 ;;
     esac
 
     emit model start "verifying $name in $dir"
