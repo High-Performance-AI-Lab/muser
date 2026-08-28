@@ -56,9 +56,11 @@ const PROGRESS_RING: usize = 500;
 /// Finished jobs kept addressable so a browser that subscribes after the
 /// run ended still gets the replay and the terminal event.
 const RECENT_JOBS: usize = 8;
-/// Wall-clock ceiling on one onboarding run. A wedged ssh would otherwise
+/// Inactivity ceiling on one onboarding run. A wedged ssh would otherwise
 /// hold the single global job slot forever and make the button permanently
-/// return 409.
+/// return 409. The clock resets on every progress event, so a slow run that
+/// is still reporting (a cold smoke loads the target model per repetition)
+/// is never killed mid-flight; only silence for this long is.
 const JOB_DEADLINE: Duration = Duration::from_secs(30 * 60);
 /// How often the reaper checks the child (cheap `waitpid(WNOHANG)`).
 const REAP_POLL: Duration = Duration::from_millis(500);
@@ -840,7 +842,7 @@ fn summarize(outcome: &ChildOutcome) -> JobExit {
             code: outcome.code,
             ok: false,
             detail: format!(
-                "onboarding exceeded its {}-minute ceiling and was stopped",
+                "onboarding made no progress for {} minutes and was stopped",
                 JOB_DEADLINE.as_secs() / 60
             ),
         };
@@ -899,17 +901,20 @@ fn run_child(job: &Arc<NodeJob>, exe: &Path, args: &[OsString], log: &SharedLog)
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
     let stdout_job = Arc::clone(job);
     let stdout_log = Arc::clone(log);
-    let stdout_pump = stdout
-        .map(|stdout| std::thread::spawn(move || pump_stdout(stdout, &stdout_job, &stdout_log)));
+    let stdout_activity = Arc::clone(&last_activity);
+    let stdout_pump = stdout.map(|stdout| {
+        std::thread::spawn(move || pump_stdout(stdout, &stdout_job, &stdout_log, &stdout_activity))
+    });
 
     let stderr_tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
     let stderr_sink = Arc::clone(&stderr_tail);
     let stderr_pump =
         stderr.map(|stderr| std::thread::spawn(move || pump_stderr(stderr, &stderr_sink)));
 
-    let (code, killed) = reap(&mut child);
+    let (code, killed) = reap(&mut child, &last_activity);
     // Join the pumps before reporting: the child's last progress line must
     // be on the stream before the terminal event that follows it.
     if let Some(handle) = stdout_pump {
@@ -935,8 +940,7 @@ fn run_child(job: &Arc<NodeJob>, exe: &Path, args: &[OsString], log: &SharedLog)
 /// Wait for the child, enforcing [`JOB_DEADLINE`]. Polling rather than a
 /// blocking wait keeps the deadline on the same thread that owns the handle,
 /// so the kill needs no second owner of the `Child`.
-fn reap(child: &mut Child) -> (Option<i32>, bool) {
-    let deadline = Instant::now() + JOB_DEADLINE;
+fn reap(child: &mut Child, last_activity: &Arc<Mutex<Instant>>) -> (Option<i32>, bool) {
     let mut killed = false;
     loop {
         match child.try_wait() {
@@ -944,7 +948,8 @@ fn reap(child: &mut Child) -> (Option<i32>, bool) {
             Ok(None) => {}
             Err(_) => return (None, killed),
         }
-        if !killed && Instant::now() >= deadline {
+        let idle_since = *last_activity.lock().expect("activity clock poisoned");
+        if !killed && idle_since.elapsed() >= JOB_DEADLINE {
             let _ = child.kill();
             killed = true;
         }
@@ -956,13 +961,19 @@ fn reap(child: &mut Child) -> (Option<i32>, bool) {
 /// every SSE subscriber) and to the on-disk transcript; anything else is
 /// transcript-only, so a stray `println!` cannot inject a non-JSON `data:`
 /// frame into a browser's `EventSource`.
-fn pump_stdout(stdout: impl Read, job: &Arc<NodeJob>, log: &SharedLog) {
+fn pump_stdout(
+    stdout: impl Read,
+    job: &Arc<NodeJob>,
+    log: &SharedLog,
+    last_activity: &Arc<Mutex<Instant>>,
+) {
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
         let line = line.trim_end().to_string();
         if line.is_empty() {
             continue;
         }
+        *last_activity.lock().expect("activity clock poisoned") = Instant::now();
         if line.starts_with('{') {
             append_log(log, &line);
             job.push(line);
