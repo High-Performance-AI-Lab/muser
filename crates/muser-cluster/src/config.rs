@@ -121,7 +121,11 @@ impl ReceiverConfigV2 {
             (None, None) => {}
             _ => {
                 return Err(
-                    "DFlash identity and dflash_context_geometry must be declared together".into(),
+                    "DFlash identity and dflash_context_geometry must be declared \
+                     together; if this cluster config predates the current schema, \
+                     re-run `muser node add <user@host>` (or the dashboard's Add \
+                     node) to regenerate it"
+                        .into(),
                 )
             }
         }

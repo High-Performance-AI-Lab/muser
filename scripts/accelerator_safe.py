@@ -22,7 +22,9 @@ LOCK_PATH = Path("/tmp/ferrite.gpu.lock")
 LEASE_FD_ENV = "MUSER_ACCELERATOR_LEASE_FD"
 FORBIDDEN = {"xctrace", "gputrace", "kill", "killall", "pkill"}
 GPU_PROCESS = re.compile(
-    r"(?:^|/)(?:llama-(?:bench|cli|server)|ferrite(?:-[^/]*)?|muser(?:-[^/ ]*)?|xctrace"
+    # muser-console is the telemetry dashboard: it never touches the
+    # accelerator, so it is excluded the way `kill` is — categorically.
+    r"(?:^|/)(?:llama-(?:bench|cli|server)|ferrite(?:-[^/]*)?|muser(?:-(?!console)[^/ ]*)?|xctrace"
     r"|(?:coreml[^/ ]*|export_dflash[^/ ]*coreml[^/ ]*|export_muse_target_coreml"
     r"|evaluate_ane)\.py)(?:$|\s)",
     re.I,

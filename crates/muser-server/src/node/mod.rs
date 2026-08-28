@@ -472,7 +472,9 @@ fn record_error(error: &str) -> String {
             culprits.join(", ")
         };
         return format!(
-            "the accelerator is busy ({holders} is running); rerun this step when the machine is quiet"
+            "the accelerator is busy ({holders} is running); stop it and rerun \
+             this step — a modelless `muser serve` (no --model) only serves \
+             management routes and may stay up during onboarding"
         );
     }
     flatten_error(error)

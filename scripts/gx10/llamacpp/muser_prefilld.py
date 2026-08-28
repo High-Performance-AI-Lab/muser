@@ -101,7 +101,11 @@ def acquire_gpu_lease() -> object:
     if clients:
         handle.close()
         rendered = ", ".join(f"{pid}:{name}" for pid, name in clients)
-        raise PrefilldError(f"GX10 has pre-existing compute clients: {rendered}")
+        raise PrefilldError(
+            f"GX10 has pre-existing compute clients: {rendered}; if these are a "
+            "previous resident producer, stop it (docker stop <its container>) "
+            "and retry"
+        )
     return handle
 
 

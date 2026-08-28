@@ -793,7 +793,8 @@ fn verified_dflash_identity(
         .map_err(|error| format!("inspect pinned DFlash sidecar {}: {error}", path.display()))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!(
-            "pinned DFlash sidecar is not a regular file: {}",
+            "pinned DFlash sidecar is not a regular file: {} (symlinks are \
+             rejected — copy the artifact to this path)",
             path.display()
         ));
     }

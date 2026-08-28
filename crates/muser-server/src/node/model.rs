@@ -342,7 +342,9 @@ fn install(
     let local = local_dir.join(&artifact.filename);
     if !local.is_file() {
         return Err(format!(
-            "{role}: {} is absent locally and no --model-source-base was given",
+            "{role}: {} is absent locally; place the pinned artifact at that \
+             path (docs/release-artifacts.json names it) or pass \
+             --model-source-base",
             local.display()
         ));
     }
