@@ -33,9 +33,11 @@ jobs:
       - name: Checkout Muser
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install pinned Python test dependencies
-        run: python3 -m pip install --require-hashes -r scripts/requirements-test.txt
+        run: |
+          python3 -m venv .ci-venv
+          .ci-venv/bin/python -m pip install --require-hashes -r scripts/requirements-test.txt
       - name: Run Python suite
-        run: python3 -m unittest discover -s scripts/tests
+        run: .ci-venv/bin/python -m unittest discover -s scripts/tests
 
   clippy:
     name: Clippy
