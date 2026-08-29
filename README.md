@@ -12,14 +12,14 @@ Meta or the Muse model authors.
 
 ## Watch it work
 
-[![Muser onboarding a GX10 producer, handing remote prefill to Metal decode, and reporting measured telemetry](docs/assets/muser-onboarding-and-remote-prefill.png)](docs/assets/muser-onboarding-and-remote-prefill.mp4)
-
-**[▶ Watch the 48-second onboarding and remote-prefill demo](docs/assets/muser-onboarding-and-remote-prefill.mp4)**
+https://github.com/user-attachments/assets/02b6e368-fe46-4167-a7f0-1380e0ce2a47
 
 This is a real, privacy-masked console capture: one-field node enrollment,
 visible vLLM startup milestones, an authenticated NVFP4 prefill handoff, Metal
 decode, and measured telemetry. Accelerated sections are labeled on screen;
-the final answer and telemetry are shown in real time.
+the final answer and telemetry are shown in real time. The source-controlled
+[H.264 MP4](docs/assets/muser-onboarding-and-remote-prefill.mp4) is also
+available for download.
 
 ## The three numbers that matter
 

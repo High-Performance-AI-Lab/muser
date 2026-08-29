@@ -48,4 +48,26 @@ runtime_base='https://github.com/High-Performance-AI-Lab/muser/releases/download
 probe 'Metal runtime' "$runtime_base/llama-metal-89e0aa6fd362.metallib"
 probe 'Metal source receipt' "$runtime_base/llama-metal-89e0aa6fd362-source-receipt.json"
 
+video_url='https://github.com/user-attachments/assets/02b6e368-fe46-4167-a7f0-1380e0ce2a47'
+if ! grep --fixed-strings --line-regexp --quiet "$video_url" "$root/README.md"; then
+    echo 'root README does not contain the native GitHub video attachment' >&2
+    exit 1
+fi
+video_payload=$(jq --compact-output --null-input \
+    --arg text "$video_url" \
+    '{text: $text, mode: "gfm", context: "High-Performance-AI-Lab/muser"}')
+video_render=$(curl --silent --show-error --fail --max-time 60 \
+    --request POST \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'Content-Type: application/json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    --data "$video_payload" \
+    https://api.github.com/markdown)
+if [[ "$video_render" != *'<video '* ]]; then
+    echo 'root README attachment does not render as a native GitHub video player' >&2
+    exit 1
+fi
+printf 'ok  onboarding video player\n'
+checked=$((checked + 1))
+
 printf 'public onboarding asset gate passed (%d assets)\n' "$checked"
