@@ -256,6 +256,7 @@ def build_engine(args: argparse.Namespace, config: dict[str, Any]):
             kv_connector_module_path="muser_vllm.connector",
             kv_connector_extra_config=config["connector"],
         )
+    chunked_prefill = args.max_num_batched_tokens < args.max_model_len
     engine = LLM(
         model=args.model,
         tokenizer=args.tokenizer or args.model,
@@ -264,7 +265,7 @@ def build_engine(args: argparse.Namespace, config: dict[str, Any]):
         kv_cache_dtype="auto",
         dtype="float16",
         enforce_eager=True,
-        enable_chunked_prefill=False,
+        enable_chunked_prefill=chunked_prefill,
         enable_prefix_caching=bool(getattr(args, "enable_prefix_caching", False)),
         disable_hybrid_kv_cache_manager=True,
         enable_flashinfer_autotune=False,
@@ -396,6 +397,7 @@ def runtime_receipt(
             "kernel_warmup": startup_warmup["selection"],
             "max_model_len": args.max_model_len,
             "max_num_batched_tokens": args.max_num_batched_tokens,
+            "chunked_prefill": args.max_num_batched_tokens < args.max_model_len,
             "max_num_seqs": 1,
             "model": args.model,
             "startup_dummy": args.startup_dummy,

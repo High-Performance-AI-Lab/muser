@@ -1,10 +1,9 @@
 # Benchmarks
 
 Every number muser publishes, its methodology, and where its receipt lives.
-The authoritative record is the campaign ledger
-[`goal-parity-ledger-2026-08.md`](goal-parity-ledger-2026-08.md) — this page
-is its public summary. Where a number below has a caveat, the caveat is part
-of the claim.
+This is the public campaign summary. Where a number below has a caveat, the
+caveat is part of the claim; [`launch-claims.md`](launch-claims.md) governs
+release wording.
 
 ## Methodology
 

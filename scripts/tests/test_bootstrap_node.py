@@ -60,6 +60,40 @@ class SyntaxTests(unittest.TestCase):
     def test_executable_bit(self) -> None:
         self.assertTrue(SCRIPT.stat().st_mode & 0o111, "script must be +x for the orchestrator to run it")
 
+    def test_native_wait_reports_closed_startup_phases_not_raw_logs(self) -> None:
+        text = SCRIPT.read_text()
+        for milestone in (
+            "loading the 23 GB NVFP4 checkpoint into GB10 memory",
+            "initializing the 8K chunked-prefill scheduler",
+            "allocating 128K-capable KV cache and warming kernels",
+            "running the pinned 2K first-request warmup",
+        ):
+            self.assertIn(milestone, text)
+        self.assertIn('logs --tail 200', text)
+        self.assertNotIn('emit daemon info "$logs"', text)
+
+    def test_native_wait_emits_structured_milestones_and_heartbeats(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertIn('readonly NATIVE_STARTUP_HEARTBEAT_SECONDS=15', text)
+        self.assertIn('"native_startup"', text)
+        for phase in (
+            'phase="engine-setup"',
+            'phase="weights"',
+            'phase="batch-profile"',
+            'phase="kv-warmup"',
+            'phase="request-warmup"',
+            'emit_native_startup ready',
+        ):
+            self.assertIn(phase, text)
+        self.assertIn('"$phase_detail; still working"', text)
+
+    def test_systemd_lifecycle_persists_after_ssh_logout(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertIn("ensure_persistent_user_manager", text)
+        self.assertIn('loginctl enable-linger "$user" 2>/dev/null', text)
+        self.assertIn('sudo -n loginctl enable-linger "$user"', text)
+        self.assertIn('loginctl show-user "$user" -p Linger', text)
+
 
 class UsageTests(unittest.TestCase):
     def test_help_exits_zero_and_lists_subcommands(self) -> None:
@@ -384,7 +418,8 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(event["schema"], "muser.node-progress.v2")
             self.assertEqual(event["step"], "daemon")
             statuses.append(event["status"])
-        self.assertEqual(statuses, ["start", "planned", "planned"])
+        self.assertEqual(statuses, ["start", "planned", "planned", "planned"])
+        self.assertIn("survives SSH logout", result.stdout)
 
     def test_lane_with_spaces_dry_run(self) -> None:
         spaced = self.work / "space lane"

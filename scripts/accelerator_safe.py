@@ -68,6 +68,14 @@ def parse_args() -> argparse.Namespace:
             "the nested wrapper verifies ownership before borrowing it"
         ),
     )
+    parser.add_argument(
+        "--operational",
+        action="store_true",
+        help=(
+            "run a readiness check without benchmark settling delays; the "
+            "exclusive accelerator lease and live-process admission check remain"
+        ),
+    )
     parser.add_argument("--quiet-seconds", type=int, default=10)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -324,6 +332,7 @@ def main() -> int:
         "out_dir": str(out_dir),
         "expected_records": ["command.log", "result.json", "records.jsonl"],
         "automatic_retry": False,
+        "operational": args.operational,
         "profiler_authorized": args.allow_profiler,
         "lease_source": "inherited" if LEASE_FD_ENV in os.environ else "acquired",
         "lease_shared_with_child": args.share_lease,
@@ -331,8 +340,12 @@ def main() -> int:
     print(json.dumps(planned, indent=2, sort_keys=True))
     if not args.execute:
         return 0
-    if args.quiet_seconds < 10:
-        raise SystemExit("execution requires quiet periods of at least 10 seconds")
+    minimum_quiet_seconds = 0 if args.operational else 10
+    if args.quiet_seconds < minimum_quiet_seconds:
+        raise SystemExit(
+            "benchmark execution requires quiet periods of at least 10 seconds; "
+            "only --operational readiness checks may use a shorter delay"
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     receipt_path = args.result_receipt
@@ -424,6 +437,7 @@ def main() -> int:
         "finished_at": finished,
         "lease_source": planned["lease_source"],
         "lease_shared_with_child": args.share_lease,
+        "operational": args.operational,
     }
     publish_result(receipt_path, receipt)
     record["result_receipt"] = str(receipt_path)

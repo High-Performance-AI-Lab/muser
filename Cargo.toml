@@ -6,6 +6,7 @@ members = [
     "crates/muser-kvpack",
     "crates/muser-cluster",
     "crates/muser-bench",
+    "crates/muser-launcher",
 ]
 exclude = ["third_party/kvpack", "third_party/metal"]
 

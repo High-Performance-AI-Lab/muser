@@ -189,7 +189,7 @@ struct SealedNativeIdentity {
 }
 
 const NATIVE_SEALED: SealedNativeIdentity = SealedNativeIdentity {
-    runtime_identity_sha256: "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264",
+    runtime_identity_sha256: "e2485c468d4467edccc8385cf62545216970df7b8eef6ecd2b10be5fe0a68ee7",
     checkpoint_revision: "d5109a1d187c27bd1734e81844e71aa4d964e66a",
     checkpoint_artifact_sha256: "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
     checkpoint_receipt_sha256: "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa",
@@ -197,9 +197,9 @@ const NATIVE_SEALED: SealedNativeIdentity = SealedNativeIdentity {
     image_receipt_sha256: "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6",
     image_archive_sha256: "eff84d1d6af33c7bd4bff1cb2ae4129f79bf3dab2cfd64b62f93efcad348a2fa",
     image_archive_parts_sha256: "ca0df6b517edbc8e2cc353c395bd855a5f50998cc16667d663b1b717517ba294",
-    adapter_sha256: "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
+    adapter_sha256: "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
     vllm_commit: "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    overlay_receipt_sha256: "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2",
+    overlay_receipt_sha256: "b8914862d9239411dbbe2cdc5976aa1975ad4607246d2f1329f796916fae166d",
     consumer_sha256: "dc9865ef9770324b1b5d7bdebc7fc6b2c9fb125084fe2461b6f5168c552193b1",
     consumer_receipt_sha256: "ccac21c54d765f62f15acf0c496b946cd129db5f6ca5f026be13cd5705e9da21",
     consumer_parts_sha256: "8a5568ceeab6cd775e6394dcae2723d9b2f0b2e449214389d01e8b8e09ed72d9",
@@ -207,7 +207,7 @@ const NATIVE_SEALED: SealedNativeIdentity = SealedNativeIdentity {
     chat_template_sha256: "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
     context_policy_sha256: "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",
     target_cache_identity_sha256:
-        "a3bbd72fc16116322b5c9dc701f155d35349146b2af3e3b8465732b7df1eabd0",
+        "c34ce9b3deabd53b69280b00a9d1098844b97ec854d230b9f4d556acd9d776a3",
     prompt_sha256: "149ac0d9c37c957823e53c0637b52a38f2ac601089dbda9f98eec4bc5f369030",
     rope_cache_sha256: "948949af0c4b0106dd26071d839e9643688c4c5a24f57a0fe9872d2ad49b2131",
     maximum_logit_absolute: 11.0,
@@ -393,6 +393,10 @@ struct NativeIdentityFile {
 #[derive(Debug, Clone)]
 pub struct NativeIdentity {
     pub path: PathBuf,
+    /// Exact bytes parsed and admitted by `load`. Deployment persists these
+    /// bytes rather than reopening `path`, closing the validation-to-copy
+    /// race for mutable source checkouts and mounted bundles.
+    admitted_bytes: Vec<u8>,
     pub checkpoint_repository: String,
     pub checkpoint_revision: String,
     pub checkpoint_directory: String,
@@ -594,6 +598,7 @@ impl NativeIdentity {
 
         Ok(Self {
             path,
+            admitted_bytes: bytes,
             checkpoint_repository: checkpoint.repository.clone(),
             checkpoint_revision: checkpoint.revision.clone(),
             checkpoint_directory: checkpoint.directory.clone(),
@@ -644,6 +649,10 @@ impl NativeIdentity {
             sha256: file.sha256.clone(),
         }
     }
+
+    pub(super) fn admitted_bytes(&self) -> &[u8] {
+        &self.admitted_bytes
+    }
 }
 
 /// The subset of `muser.gx10-container.receipt.v1` the pipeline reads. The
@@ -663,6 +672,9 @@ pub struct ContainerReceipt {
     pub source_commit: String,
     #[serde(skip)]
     pub path: PathBuf,
+    /// Exact bytes that passed `validate`; see `NativeIdentity::admitted_bytes`.
+    #[serde(skip)]
+    admitted_bytes: Vec<u8>,
 }
 
 pub const EXPORT_BINARY: &str = "/opt/muser/bin/spark_kv_export";
@@ -688,6 +700,7 @@ impl ContainerReceipt {
             .map_err(|error| format!("parse {}: {error}", path.display()))?;
         receipt.path = path.to_path_buf();
         receipt.validate()?;
+        receipt.admitted_bytes = bytes;
         Ok(receipt)
     }
 
@@ -718,6 +731,10 @@ impl ContainerReceipt {
             return Err("receipt source_commit is not an exact 40-hex commit".into());
         }
         Ok(())
+    }
+
+    pub(super) fn admitted_bytes(&self) -> &[u8] {
+        &self.admitted_bytes
     }
 
     /// Newest producer receipt in `dir`, by modification time. "Producer"

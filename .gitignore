@@ -1,6 +1,7 @@
 # Rust build output
 /target/
 **/target/
+/dist/
 Cargo.lock.bak
 
 # Model weights / checkpoints — never commit these

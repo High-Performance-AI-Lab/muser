@@ -82,6 +82,82 @@ pub const DAEMON_PORT: u16 = 29591;
 /// The Mac receiver's listen port, written into the node's cluster config.
 pub const RECEIVER_PORT: u16 = 29590;
 
+/// Cross-process lease for the one-producer topology. The dashboard already
+/// serializes jobs inside one server process, but a separate CLI or serving
+/// process could otherwise race the registry, rotate enrollment underneath a
+/// live receiver, or restart the producer during a handoff. `flock` is
+/// released by the kernel even after a crash; the small file is only a human
+/// readable holder receipt, not the lock itself.
+pub(crate) struct OperationLock {
+    _file: std::fs::File,
+}
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd as _;
+
+        // `flock` follows the open file description, so a descriptor briefly
+        // duplicated by a concurrently spawned process can otherwise retain
+        // this lease after the owning Rust value closes its copy. An explicit
+        // unlock releases that shared lock immediately; closing the file then
+        // remains the kernel-backed crash fallback.
+        // SAFETY: `_file` owns a live descriptor for the whole destructor.
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+impl OperationLock {
+    pub(crate) fn acquire(home: &Path, purpose: &str) -> Result<Self> {
+        use std::io::{Read as _, Seek as _, Write as _};
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        std::fs::create_dir_all(home)
+            .map_err(|error| format!("create {}: {error}", home.display()))?;
+        let path = home.join("node-operation.lock");
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            // Rust already requests close-on-exec on supported Unix hosts;
+            // restate it as a topology invariant for crash-time inheritance.
+            .custom_flags(libc::O_CLOEXEC);
+        let mut file = options
+            .open(&path)
+            .map_err(|error| format!("open topology lock {}: {error}", path.display()))?;
+        set_mode(&path, 0o600)?;
+
+        // SAFETY: `file` owns a live descriptor for the duration of the call;
+        // flock neither retains a pointer nor accesses Rust memory.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if locked != 0 {
+            let error = std::io::Error::last_os_error();
+            let mut holder = String::new();
+            let _ = file.seek(std::io::SeekFrom::Start(0));
+            let _ = file.read_to_string(&mut holder);
+            let holder = holder.trim();
+            let holder = if holder.is_empty() {
+                "another muser process".to_string()
+            } else {
+                holder.to_string()
+            };
+            return Err(format!(
+                "node topology is busy ({holder}); stop that operation or server before changing or probing the enrolled producer ({error})"
+            ));
+        }
+
+        file.set_len(0)
+            .map_err(|error| format!("truncate topology lock {}: {error}", path.display()))?;
+        file.write_all(format!("pid {}: {purpose}\n", std::process::id()).as_bytes())
+            .map_err(|error| format!("write topology lock {}: {error}", path.display()))?;
+        file.sync_data()
+            .map_err(|error| format!("sync topology lock {}: {error}", path.display()))?;
+        Ok(Self { _file: file })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeEntry {
     pub name: String,
@@ -102,6 +178,23 @@ pub struct NodeEntry {
     pub container_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_receipt: Option<String>,
+    /// Digest of the complete control runtime last staged by `node deploy`:
+    /// bootstrap, lane scripts, and (for native) the muser_vllm package. A
+    /// matching container alone is not enough to skip deployment after a
+    /// client upgrade because these files live outside the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_sha256: Option<String>,
+    /// Exact local decoder artifact verified by the model stage. Native
+    /// onboarding may use a non-default `--model-dir`; recording the path is
+    /// what lets `muser up --node <name>` start the same enrolled consumer
+    /// without asking the user to reconstruct it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_model_path: Option<String>,
+    /// Stat-bound receipt for the last complete SHA-256 verification of the
+    /// local decoder. `muser up` compares this closed stamp in microseconds
+    /// and re-hashes only when the file's identity or timestamps changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_validation: Option<String>,
     pub pki_dir: String,
     pub hmac_key_id: String,
     pub hmac_epoch: i64,
@@ -138,6 +231,9 @@ impl NodeEntry {
             producer: Some(ProducerKind::Native),
             container_image: None,
             container_receipt: None,
+            runtime_sha256: None,
+            consumer_model_path: None,
+            consumer_validation: None,
             pki_dir: node_dir(home, name).join("pki").display().to_string(),
             hmac_key_id: String::new(),
             hmac_epoch: 0,
@@ -267,6 +363,94 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     set_mode(path, 0o600)
 }
 
+/// Atomically replace a private state file without ever following an
+/// existing symlink. This is for durable receipts and other non-key state
+/// whose readers must see either the old complete value or the new complete
+/// value. The temporary is created with O_EXCL in the destination directory,
+/// fsync'd, renamed, and followed by a directory fsync.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    create_private_dir(parent)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(format!(
+                "refusing to replace non-regular private state path {}",
+                path.display()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    }
+
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{} has no UTF-8 filename", path.display()))?;
+    let mut temporary = None;
+    let mut temporary_file = None;
+    for _ in 0..128 {
+        let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".{filename}.tmp.{}.{nonce}", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
+            Ok(file) => {
+                temporary = Some(candidate);
+                temporary_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create {}: {error}", candidate.display())),
+        }
+    }
+    let temporary = temporary.ok_or_else(|| {
+        format!(
+            "could not reserve a unique temporary beside {} after 128 attempts",
+            path.display()
+        )
+    })?;
+    let mut temporary_file = temporary_file.expect("temporary path and file are set together");
+    let result = (|| -> Result<()> {
+        temporary_file
+            .write_all(bytes)
+            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+        temporary_file
+            .sync_all()
+            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
+        drop(temporary_file);
+        set_mode(&temporary, 0o600)?;
+        std::fs::rename(&temporary, path).map_err(|error| {
+            format!(
+                "rename {} -> {}: {error}",
+                temporary.display(),
+                path.display()
+            )
+        })?;
+        let directory = std::fs::File::open(parent)
+            .map_err(|error| format!("open state directory {}: {error}", parent.display()))?;
+        directory
+            .sync_all()
+            .map_err(|error| format!("sync state directory {}: {error}", parent.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 pub fn create_private_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|error| format!("create {}: {error}", path.display()))?;
     set_mode(path, 0o700)
@@ -289,6 +473,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static NEXT_TEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     #[test]
     fn a_draft_round_trips_through_the_array_of_tables() {
@@ -338,6 +524,61 @@ mod tests {
     }
 
     #[test]
+    fn private_atomic_write_replaces_only_complete_regular_files() {
+        let home = std::env::temp_dir().join(format!(
+            "muser-private-atomic-{}-{}",
+            std::process::id(),
+            NEXT_TEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let path = home.join("nodes/gx10/identity.json");
+        write_private_atomic(&path, b"first").unwrap();
+        write_private_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let leftovers = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_atomic_write_refuses_a_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "muser-private-atomic-symlink-{}-{}",
+            std::process::id(),
+            NEXT_TEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let directory = root.join("nodes/gx10");
+        std::fs::create_dir_all(&directory).unwrap();
+        let outside = root.join("outside.json");
+        std::fs::write(&outside, b"do not replace").unwrap();
+        let path = directory.join("identity.json");
+        symlink(&outside, &path).unwrap();
+
+        let error = write_private_atomic(&path, b"replacement").unwrap_err();
+        assert!(error.contains("non-regular private state path"), "{error}");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"do not replace");
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_missing_registry_is_an_empty_registry() {
         let home =
             std::env::temp_dir().join(format!("muser-registry-absent-{}", std::process::id()));
@@ -346,6 +587,48 @@ mod tests {
             .expect("absent is not an error")
             .nodes
             .is_empty());
+    }
+
+    #[test]
+    fn topology_operations_are_single_process_across_open_files() {
+        let home =
+            std::env::temp_dir().join(format!("muser-node-operation-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let first = OperationLock::acquire(&home, "first test operation").unwrap();
+        let error = OperationLock::acquire(&home, "racing test operation")
+            .err()
+            .expect("a second descriptor must not acquire the topology lock");
+        assert!(error.contains("node topology is busy"), "{error}");
+        assert!(error.contains("first test operation"), "{error}");
+        drop(first);
+        OperationLock::acquire(&home, "after release").unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn dropping_the_owner_unlocks_an_inherited_descriptor() {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+        let home = std::env::temp_dir().join(format!(
+            "muser-node-operation-inherited-lock-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        let first = OperationLock::acquire(&home, "descriptor inheritance test").unwrap();
+        let duplicate = unsafe { libc::dup(first._file.as_raw_fd()) };
+        assert!(
+            duplicate >= 0,
+            "dup topology lock: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: `dup` returned a new owned descriptor, transferred here.
+        let inherited = unsafe { std::fs::File::from_raw_fd(duplicate) };
+
+        drop(first);
+        let after_release = OperationLock::acquire(&home, "after inherited release").unwrap();
+        drop(after_release);
+        drop(inherited);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

@@ -114,9 +114,13 @@ pub enum NodeCommand {
     /// Install and start the resident producer daemon, then wait for its port.
     Daemon(NodeStepArgs),
 
-    /// Run a real remote prefill through the production receiver and record
-    /// the measured link quality.
+    /// Run one bounded authenticated remote prefill through the production
+    /// receiver and record the measured link quality.
     Smoke(NodeStepArgs),
+
+    /// Run the full three-repetition local-reference qualification. This is
+    /// evidence work, not a prerequisite for using an otherwise healthy node.
+    Qualify(NodeStepArgs),
 
     /// Registry contents plus a live daemon probe per node.
     Status(NodeStatusArgs),
@@ -196,6 +200,13 @@ pub struct NodeAddArgs {
     #[arg(long, value_enum, value_name = "LANE")]
     pub producer: Option<ProducerKind>,
 
+    /// Re-run deployment, enrollment, and daemon startup even when the
+    /// registered native producer is already current and reachable. Without
+    /// this flag, re-adding a current node proves one live handoff and leaves
+    /// the warm producer running.
+    #[arg(long)]
+    pub repair: bool,
+
     #[command(flatten)]
     pub common: NodeCommonArgs,
 }
@@ -241,8 +252,9 @@ pub struct ServeArgs {
     #[arg(long, value_name = "PEM", requires = "tls_cert")]
     pub tls_key: Option<PathBuf>,
 
-    /// Mode-0600 file containing one API key. Required for every LAN bind
-    /// and for loopback management routes.
+    /// Mode-0600 file containing one API key. Required for every LAN bind;
+    /// when omitted on loopback, the local dashboard receives a bounded
+    /// same-origin session automatically.
     #[arg(long, value_name = "PATH")]
     pub api_key_file: Option<PathBuf>,
 
@@ -305,13 +317,12 @@ pub struct ServeArgs {
     #[arg(long, value_name = "PATH")]
     pub ane_manifest: Option<PathBuf>,
 
-    /// Prefill route. Auto/remote consumes CUDA-produced KV and therefore
-    /// requires MUSER_CROSS_VENDOR_QK=1 for the pinned exact Metal math route.
+    /// Prefill route. Auto/remote automatically selects the pinned exact
+    /// cross-vendor Metal math route used by CUDA-produced KV.
     #[arg(long, value_enum, default_value_t = PrefillArg::Local)]
     pub prefill: PrefillArg,
 
-    /// Enrolled receiver configuration. Requires --prefill auto or remote;
-    /// remote startup fails closed unless MUSER_CROSS_VENDOR_QK=1 is set.
+    /// Enrolled receiver configuration. Requires --prefill auto or remote.
     #[arg(long, value_name = "PATH")]
     pub cluster_config: Option<PathBuf>,
 
@@ -385,6 +396,18 @@ pub enum PrefixCacheArg {
 
 #[derive(Debug, Parser)]
 pub struct UpArgs {
+    /// Enrolled native prefill node to use. The node's verified Mac decoder
+    /// artifact and cluster configuration are selected from the registry;
+    /// no TLS paths or internal environment variables are required.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["gguf", "hf_repo"])]
+    pub node: Option<String>,
+
+    /// Run the Mac-only reference lane instead of the shipped NVFP4
+    /// producer + Mac decoder topology. Supplying --gguf or --hf-repo also
+    /// selects this local lane explicitly.
+    #[arg(long, conflicts_with = "node")]
+    pub local: bool,
+
     /// Path to the local Muse Glimmer GGUF.
     ///
     /// This changes location only. Model revision, size, and SHA-256 remain
@@ -420,8 +443,9 @@ pub struct UpArgs {
     #[arg(long, value_name = "PEM", requires = "tls_cert")]
     pub tls_key: Option<PathBuf>,
 
-    /// Mode-0600 API-key file. Required for nonloopback serving and for
-    /// dashboard node management; loopback inference remains keyless.
+    /// Mode-0600 API-key file. Required for nonloopback serving. When omitted
+    /// on loopback, inference is keyless and the local dashboard receives a
+    /// bounded same-origin management session automatically.
     #[arg(long, value_name = "PATH")]
     pub api_key_file: Option<PathBuf>,
 
@@ -466,6 +490,8 @@ mod tests {
                 );
                 assert_eq!(a.host.as_deref(), Some("0.0.0.0"));
                 assert_eq!(a.port, Some(9999));
+                assert!(a.node.is_none());
+                assert!(!a.local);
                 assert!(a.tls_cert.is_none());
                 assert!(a.tls_key.is_none());
                 assert!(a.api_key_file.is_none());
@@ -473,6 +499,26 @@ mod tests {
             }
             other => panic!("expected Up, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn up_selects_one_enrolled_node_without_manual_cluster_paths() {
+        let cli = Cli::try_parse_from(["muser", "up", "--node", "gx10", "--no-open"])
+            .expect("`muser up --node` must parse");
+        match cli.command {
+            Command::Up(args) => assert_eq!(args.node.as_deref(), Some("gx10")),
+            other => panic!("expected Up, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from([
+            "muser",
+            "up",
+            "--node",
+            "gx10",
+            "--gguf",
+            "/tmp/model.gguf"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["muser", "up", "--node", "gx10", "--local"]).is_err());
     }
 
     #[test]
@@ -599,7 +645,20 @@ mod tests {
                 );
                 assert!(args.common.dry_run);
                 assert!(args.common.json);
+                assert!(!args.repair);
             }
+            other => panic!("expected Node/Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn node_add_parses_the_explicit_repair_flag() {
+        let cli = Cli::try_parse_from(["muser", "node", "add", "muser@gx10.local", "--repair"])
+            .expect("`muser node add --repair` must parse");
+        match cli.command {
+            Command::Node(NodeArgs {
+                command: NodeCommand::Add(args),
+            }) => assert!(args.repair),
             other => panic!("expected Node/Add, got {other:?}"),
         }
     }
@@ -655,7 +714,15 @@ mod tests {
 
     #[test]
     fn every_pipeline_step_is_individually_runnable() {
-        for step in ["preflight", "deploy", "model", "enroll", "daemon", "smoke"] {
+        for step in [
+            "preflight",
+            "deploy",
+            "model",
+            "enroll",
+            "daemon",
+            "smoke",
+            "qualify",
+        ] {
             let cli = Cli::try_parse_from(["muser", "node", step, "gx10"])
                 .unwrap_or_else(|error| panic!("`muser node {step} <name>` must parse: {error}"));
             let Command::Node(NodeArgs { command }) = cli.command else {
@@ -667,7 +734,8 @@ mod tests {
                 | NodeCommand::Model(args)
                 | NodeCommand::Enroll(args)
                 | NodeCommand::Daemon(args)
-                | NodeCommand::Smoke(args) => args.name,
+                | NodeCommand::Smoke(args)
+                | NodeCommand::Qualify(args) => args.name,
                 other => panic!("expected a single-step subcommand, got {other:?}"),
             };
             assert_eq!(name, "gx10");

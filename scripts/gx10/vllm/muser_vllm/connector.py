@@ -1,9 +1,11 @@
 """Pinned vLLM producer for Muse Glimmer NVFP4 -> Muser Handoff V2.
 
 This connector intentionally supports one exact configuration: vLLM commit
-6adad08767583f52eb4d2122111af0bf638ed5e6, FlashAttention HND f16 KV,
-one unchunked Muse request, and target-only Handoff V2. Any layout or scheduler
-change fails closed before a seal can be emitted.
+6adad08767583f52eb4d2122111af0bf638ed5e6, FlashAttention HND f16 KV, one
+Muse request, and target-only Handoff V2. Chunked prefill is accumulated only
+in vLLM's ordinary KV cache; the connector activates on the final chunk and
+gathers the complete prefix from the physical block table. Any layout or
+scheduler change fails closed before a seal can be emitted.
 """
 
 from __future__ import annotations
@@ -72,6 +74,14 @@ class MuseRequestMeta:
     prompt_token_ids: list[int]
     handoff: dict[str, Any]
     scheduled_perf_ns: int
+    prefill_chunks: int = 1
+
+
+@dataclass
+class _ScheduledRequest:
+    meta: MuseRequestMeta | None
+    prompt_token_count: int
+    chunks: int = 1
 
 
 @dataclass
@@ -154,6 +164,10 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
         self._send_queue: queue.Queue | None = None
         self._sender_thread: threading.Thread | None = None
         self._send_error: Exception | None = None
+        # Scheduler-side only. Worker instances receive the final metadata
+        # object and never populate this table. A None meta is the closed
+        # startup-warmup marker, which may itself span multiple chunks.
+        self._scheduled_requests: dict[str, _ScheduledRequest] = {}
 
     def _require_static_config(self) -> None:
         required = {
@@ -429,6 +443,8 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
                     "vllm_commit": PINNED_VLLM_COMMIT,
                     "producer_mode": self._producer_mode,
                     "prompt_token_count": len(request.prompt_token_ids),
+                    "prefill_chunks": request.prefill_chunks,
+                    "chunked_prefill": request.prefill_chunks > 1,
                     "prefix_cut": request.handoff.get("prefix_cut", 0),
                     "token_ids_sha256": token_ids_sha256(request.prompt_token_ids),
                     "layer_kv_sha256": layer_hashes,
@@ -659,9 +675,15 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
         self, scheduler_output: "SchedulerOutput"
     ) -> KVConnectorMetadata:
         metadata = MuseConnectorMetadata()
-        if scheduler_output.scheduled_cached_reqs.req_ids:
-            raise ProtocolError("cached, resumed, or chunked Muse requests are unsupported")
-        if len(scheduler_output.scheduled_new_reqs) > 1:
+        for req_id in scheduler_output.finished_req_ids:
+            self._scheduled_requests.pop(req_id, None)
+        preempted = set(scheduler_output.preempted_req_ids or ())
+        if preempted.intersection(self._scheduled_requests):
+            raise ProtocolError("a chunked Muse prefill was preempted before handoff")
+
+        cached = scheduler_output.scheduled_cached_reqs
+        scheduled_count = len(scheduler_output.scheduled_new_reqs) + len(cached.req_ids)
+        if scheduled_count > 1:
             raise ProtocolError("Muse Handoff V2 accepts one request at a time")
         scheduled_perf_ns = time.perf_counter_ns()
         for request in scheduler_output.scheduled_new_reqs:
@@ -670,9 +692,11 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
                 raise ProtocolError("handoff requires at least two prompt tokens")
             if request.num_computed_tokens and not self._prefix_caching:
                 raise ProtocolError("Muse producer requires a fresh full prefill")
+            computed = int(request.num_computed_tokens or 0)
             scheduled = scheduler_output.num_scheduled_tokens[request.req_id]
-            if scheduled != len(token_ids) - (request.num_computed_tokens or 0):
-                raise ProtocolError("Muse producer requires one unchunked prefill step")
+            remaining = len(token_ids) - computed
+            if computed < 0 or scheduled <= 0 or scheduled > remaining:
+                raise ProtocolError("invalid initial Muse prefill schedule")
             if len(request.block_ids) != 1:
                 raise ProtocolError("Muse producer requires one KV cache group")
             extra_args = getattr(request.sampling_params, "extra_args", None) or {}
@@ -681,16 +705,56 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
             if extra_args.get("muser_startup_warmup") is True:
                 if transfer:
                     raise ProtocolError("startup warmup cannot carry transfer state")
-                continue
-            if not isinstance(handoff, dict):
-                raise ProtocolError("request is missing kv_transfer_params.muser_handoff")
-            metadata.requests.append(
-                MuseRequestMeta(
+                request_meta = None
+            else:
+                if not isinstance(handoff, dict):
+                    raise ProtocolError(
+                        "request is missing kv_transfer_params.muser_handoff"
+                    )
+                request_meta = MuseRequestMeta(
                     prompt_token_ids=token_ids,
                     handoff=dict(handoff),
                     scheduled_perf_ns=scheduled_perf_ns,
                 )
+            pending = _ScheduledRequest(
+                meta=request_meta,
+                prompt_token_count=len(token_ids),
             )
+            if scheduled == remaining:
+                if request_meta is not None:
+                    metadata.requests.append(request_meta)
+            else:
+                self._scheduled_requests[request.req_id] = pending
+
+        for index, req_id in enumerate(cached.req_ids):
+            if req_id in cached.resumed_req_ids:
+                self._scheduled_requests.pop(req_id, None)
+                raise ProtocolError("a chunked Muse prefill resumed after preemption")
+            pending = self._scheduled_requests.get(req_id)
+            output_tokens = int(cached.num_output_tokens[index])
+            if pending is None:
+                # Decode steps after a completed handoff remain ordinary
+                # cached requests. A context-phase chunk without scheduler
+                # state means the connector missed the first chunk.
+                if output_tokens == 0:
+                    raise ProtocolError("unknown cached Muse prefill request")
+                continue
+            if output_tokens != 0:
+                self._scheduled_requests.pop(req_id, None)
+                raise ProtocolError("Muse decode began before final prefill handoff")
+            computed = int(cached.num_computed_tokens[index])
+            scheduled = scheduler_output.num_scheduled_tokens[req_id]
+            remaining = pending.prompt_token_count - computed
+            if computed <= 0 or scheduled <= 0 or scheduled > remaining:
+                self._scheduled_requests.pop(req_id, None)
+                raise ProtocolError("invalid cached Muse prefill schedule")
+            pending.chunks += 1
+            if scheduled == remaining:
+                self._scheduled_requests.pop(req_id, None)
+                if pending.meta is not None:
+                    pending.meta.scheduled_perf_ns = scheduled_perf_ns
+                    pending.meta.prefill_chunks = pending.chunks
+                    metadata.requests.append(pending.meta)
         return metadata
 
     def request_finished(

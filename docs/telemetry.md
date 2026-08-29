@@ -78,6 +78,13 @@ live-only and same-origin: it fetches `/snapshot` once, then subscribes to
 `/telemetry` SSE keyframes. `file://` and cross-origin endpoint overrides are
 disabled during containment.
 
+The embedded Lab console is organized into Fleet, Inference, Activity, and
+History tabs. The Inference tab can stream a prompt through the selected
+decoder while the same page renders the prefill-to-decode handoff. Retained
+history stays explicitly unavailable in direct-engine mode; installing the
+optional `muser-console` service enables that tab without changing the live
+state plane.
+
 The renderer never falls back to simulated data after a connection failure.
 It reports the endpoint as disconnected and keeps honesty badges from the
 last valid snapshot. Mock fields (node GPU telemetry, egress, joules)

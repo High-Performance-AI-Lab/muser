@@ -426,8 +426,17 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     // Verify the consumer artifact before rotating any enrollment state. Its
     // digest is the model identity the producer will put on every Begin.
     let consumer_path = ctx.model_dir()?.join(&identity.consumer.filename);
-    crate::model::validate_configured_artifact(&consumer_path, &identity.consumer.sha256)
-        .map_err(|error| format!("verify native consumer identity: {error}"))?;
+    if ctx.native_consumer_was_verified(&consumer_path, &identity.consumer.sha256) {
+        ctx.progress.emit(
+            Step::Enroll,
+            Status::Info,
+            "reusing the native consumer SHA-256 verified by the model stage",
+        );
+    } else {
+        crate::model::validate_configured_artifact(&consumer_path, &identity.consumer.sha256)
+            .map_err(|error| format!("verify native consumer identity: {error}"))?;
+        ctx.remember_native_consumer(&consumer_path, &identity.consumer.sha256);
+    }
 
     entry.touch(STATE_NEEDS_REENROLLMENT);
     entry.last_error = Some(format!("enrollment {run_id} has not completed activation"));
@@ -477,11 +486,16 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     }
     let checkpoint = format!("{lane}/models/{}", identity.checkpoint_directory);
     let container_name = format!("muser-native-{}", entry.name);
+    let runtime_sha256 = entry
+        .runtime_sha256
+        .as_deref()
+        .ok_or_else(|| "native enrollment requires the deployed runtime digest".to_string())?;
     let handoff = native_handoff_config(
         &identity,
         &container_runtime,
         &container_name,
         &checkpoint,
+        runtime_sha256,
         &mac.pin,
         &key_id,
         next_epoch,
@@ -560,11 +574,13 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // The sealed handoff identity is intentionally explicit at each call site.
 fn native_handoff_config(
     identity: &super::artifacts::NativeIdentity,
     container_runtime: &str,
     container_name: &str,
     checkpoint_dir: &str,
+    runtime_sha256: &str,
     mac_pin: &str,
     key_id: &str,
     hmac_epoch: i64,
@@ -589,6 +605,7 @@ fn native_handoff_config(
         "container_image": identity.image_id,
         "container_name": container_name,
         "runtime_identity": ".enrollment-active/container.json",
+        "runtime_sha256": runtime_sha256,
         "checkpoint_dir": checkpoint_dir,
         "timeout_seconds": TIMEOUT_SECONDS,
         "max_context": MAX_CONTEXT,
@@ -1191,12 +1208,14 @@ mod tests {
             "/usr/bin/docker",
             "muser-native-fixture",
             "/home/muser/.muser/lane/fixture/models/checkpoint",
+            &"f".repeat(64),
             &"a".repeat(64),
             "fixture-key",
             1,
         );
         assert_eq!(handoff["schema"], json!("muser.native-prefilld.v1"));
         assert_eq!(handoff["container_image"], json!(identity.image_id));
+        assert_eq!(handoff["runtime_sha256"], json!("f".repeat(64)));
         assert_eq!(
             handoff["checkpoint_artifact_sha256"],
             json!(identity.checkpoint_artifact_sha256)

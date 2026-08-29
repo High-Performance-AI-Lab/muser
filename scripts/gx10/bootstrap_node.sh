@@ -27,6 +27,8 @@ readonly DAEMON_UNIT="muser-prefilld.service"
 readonly TMUX_SESSION="muser-prefilld"
 readonly WARM_POLL_SECONDS=60
 readonly NATIVE_WARM_POLL_SECONDS=900
+readonly NATIVE_STARTUP_TOTAL=5
+readonly NATIVE_STARTUP_HEARTBEAT_SECONDS=15
 
 json_mode=0
 dry_run=0
@@ -186,6 +188,84 @@ poll_listen_port() {
     return 1
 }
 
+# Only this closed vocabulary crosses the remote boundary. The dashboard uses
+# it for a five-segment vLLM startup indicator; it must never receive raw
+# detached-container logs, which can contain enrollment identity details.
+emit_native_startup() {
+    local phase=$1 completed=$2 detail=$3 started=$4
+    local elapsed=$((SECONDS - started))
+    local data
+    data=$(printf '{"native_startup":{"phase":"%s","completed":%s,"total":%s,"elapsed_seconds":%s}}' \
+        "$phase" "$completed" "$NATIVE_STARTUP_TOTAL" "$elapsed")
+    emit daemon info "$detail (${elapsed}s)" "$data"
+}
+
+# The native product lane retains a 128K context ceiling while profiling an
+# 8K chunk at cold start. Relay closed, sanitized milestones from the detached
+# container so the remaining weight I/O and kernel warmup report real work
+# instead of looking stuck; never forward raw logs (they contain identity
+# details).
+poll_native_listen_port() {
+    local host=$1 port=$2 timeout=$3 runtime=$4 container=$5
+    local deadline=$((SECONDS + timeout)) started=$SECONDS logs=""
+    local seen_container=0 seen_weights=0 seen_profile=0 seen_engine=0 seen_ready=0
+    local phase="engine-setup" completed=0
+    local phase_detail="starting the resident container and pinned vLLM"
+    local last_heartbeat=$SECONDS
+    emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
+            exec 3>&- 3<&-
+            emit_native_startup ready "$NATIVE_STARTUP_TOTAL" \
+                "resident vLLM ready; producer control is accepting connections" "$started"
+            return 0
+        fi
+        if [ -x "$runtime" ] && [ -n "$container" ]; then
+            logs=$("$runtime" logs --tail 200 "$container" 2>&1 || true)
+            if [ "$seen_container" = 0 ] && [ -n "$logs" ]; then
+                seen_container=1
+                phase_detail="resident container created; initializing pinned vLLM"
+                emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+                last_heartbeat=$SECONDS
+            fi
+            if [ "$seen_weights" = 0 ] && grep -q "Loading safetensors checkpoint shards" <<<"$logs"; then
+                seen_weights=1
+                phase="weights" completed=1
+                phase_detail="loading the 23 GB NVFP4 checkpoint into GB10 memory"
+                emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+                last_heartbeat=$SECONDS
+            fi
+            if [ "$seen_profile" = 0 ] && grep -q "Loading weights took" <<<"$logs"; then
+                seen_profile=1
+                phase="batch-profile" completed=2
+                phase_detail="weights loaded; initializing the 8K chunked-prefill scheduler"
+                emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+                last_heartbeat=$SECONDS
+            fi
+            if [ "$seen_engine" = 0 ] && grep -q "Initial free memory" <<<"$logs"; then
+                seen_engine=1
+                phase="kv-warmup" completed=3
+                phase_detail="8K startup profile complete; allocating 128K-capable KV cache and warming kernels"
+                emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+                last_heartbeat=$SECONDS
+            fi
+            if [ "$seen_ready" = 0 ] && grep -q "init engine (profile, create kv cache, warmup model) took" <<<"$logs"; then
+                seen_ready=1
+                phase="request-warmup" completed=4
+                phase_detail="vLLM engine initialized; running the pinned 2K first-request warmup"
+                emit_native_startup "$phase" "$completed" "$phase_detail" "$started"
+                last_heartbeat=$SECONDS
+            fi
+        fi
+        if [ $((SECONDS - last_heartbeat)) -ge "$NATIVE_STARTUP_HEARTBEAT_SECONDS" ]; then
+            emit_native_startup "$phase" "$completed" "$phase_detail; still working" "$started"
+            last_heartbeat=$SECONDS
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 daemon_log_tail() {
     local mode=$1 lane=$2
     if [ "$mode" = "tmux" ]; then
@@ -322,7 +402,23 @@ cmd_model() {
 
     require_cmd curl model "install curl to fetch models"
     local partial="$target.partial"
-    if ! curl -fL -C - --retry 5 --retry-connrefused -o "$partial" -- "$source"; then
+    # Curl's progress meter is stderr with carriage returns, which the JSON
+    # onboarding stream cannot relay. Run it as one owned child and emit a
+    # closed heartbeat so the dashboard both shows progress and does not
+    # mistake a slow multi-gigabyte download for a wedged SSH command.
+    curl -fL -C - --retry 5 --retry-connrefused \
+        --speed-limit 1024 --speed-time 120 -o "$partial" -- "$source" &
+    local download_pid=$! download_started=$SECONDS download_status=0
+    trap 'kill "$download_pid" 2>/dev/null || true' HUP INT TERM
+    while kill -0 "$download_pid" 2>/dev/null; do
+        sleep 15
+        if kill -0 "$download_pid" 2>/dev/null; then
+            emit model info "downloading $name ($((SECONDS - download_started))s elapsed)"
+        fi
+    done
+    wait "$download_pid" || download_status=$?
+    trap - HUP INT TERM
+    if [ "$download_status" -ne 0 ]; then
         fail model "download failed from $source (network/URL problem; check connectivity and --source)"
     fi
     local downloaded
@@ -343,6 +439,39 @@ cmd_model() {
 }
 
 # --------------------------------------------------------------- daemon --
+ensure_persistent_user_manager() {
+    [ "$(id -u)" = "0" ] && return 0
+    local user linger
+    user=$(id -un)
+    linger=$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)
+    if [ "$linger" = "yes" ]; then
+        emit daemon info "user service persistence is enabled for $user"
+        return 0
+    fi
+    if [ "$dry_run" = 1 ]; then
+        plan daemon "would enable systemd user lingering for $user so the producer survives SSH logout and starts after reboot"
+        return 0
+    fi
+    command -v loginctl >/dev/null 2>&1 || \
+        fail daemon "persistent user service requires loginctl; install systemd or run this lane as root"
+    # systemd-logind may authorize a user to enable lingering for their own
+    # account without elevation (the DGX OS policy does). Try that first;
+    # requiring sudo unconditionally turned an otherwise automatic first run
+    # into a false password blocker.
+    if loginctl enable-linger "$user" 2>/dev/null; then
+        emit daemon info "enabled user service persistence without elevation"
+    else
+        command -v sudo >/dev/null 2>&1 || \
+            fail daemon "systemd lingering is disabled for $user; run 'sudo loginctl enable-linger $user' once, then retry"
+        if ! sudo -n loginctl enable-linger "$user"; then
+            fail daemon "systemd lingering is disabled for $user and automatic activation was refused; run 'sudo loginctl enable-linger $user' once, then retry"
+        fi
+    fi
+    linger=$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)
+    [ "$linger" = "yes" ] || fail daemon "loginctl did not confirm lingering for $user"
+    emit daemon info "enabled persistent user service lifecycle for $user"
+}
+
 daemon_install_systemd() {
     local lane=$1 template=$2
     shift 2
@@ -365,6 +494,7 @@ daemon_install_systemd() {
         env_dir="${XDG_CONFIG_HOME:-$HOME/.config}/muser"
         systemctl_cmd=(systemctl --user)
         wanted_by="default.target"
+        ensure_persistent_user_manager
     fi
     local unit_path="$unit_dir/$DAEMON_UNIT"
     local env_path="$env_dir/gx10-prefilld.env"
@@ -546,7 +676,17 @@ cmd_daemon() {
 
     local poll_seconds=$WARM_POLL_SECONDS
     [ "$native" = 1 ] && poll_seconds=$NATIVE_WARM_POLL_SECONDS
-    if ! poll_listen_port "$poll_host" "$listen_port" "$poll_seconds"; then
+    local listening=1
+    if [ "$native" = 1 ]; then
+        local container_runtime container_name
+        container_runtime=$(extract_json_string_field "$handoff" container_runtime)
+        container_name=$(extract_json_string_field "$handoff" container_name)
+        emit daemon info "validating the pinned checkpoint before resident container start"
+        poll_native_listen_port "$poll_host" "$listen_port" "$poll_seconds" "$container_runtime" "$container_name" || listening=0
+    else
+        poll_listen_port "$poll_host" "$listen_port" "$poll_seconds" || listening=0
+    fi
+    if [ "$listening" != 1 ]; then
         local tail
         tail=$(daemon_log_tail "$mode" "$lane")
         fail daemon "daemon did not open $listen_host:$listen_port within ${poll_seconds}s; log tail follows:

@@ -1,7 +1,7 @@
 {
   "schema": "muser.native-onboarding-identity.v1",
   "status": "frozen",
-  "source_runtime_identity_sha256": "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264",
+  "source_runtime_identity_sha256": "e2485c468d4467edccc8385cf62545216970df7b8eef6ecd2b10be5fe0a68ee7",
   "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
   "checkpoint": {
     "repository": "RedHatAI/Muse-Glimmer-30B-NVFP4",
@@ -125,10 +125,10 @@
     }
   },
   "vllm_overlay": {
-    "adapter_sha256": "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
+    "adapter_sha256": "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
     "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    "receipt": "muser-build-receipt://nvfp4-release-20260828/spark-producer-adapter-release-final3-20260828.json",
-    "receipt_sha256": "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2"
+    "receipt": "release/nvfp4-runtime-overlay-v2.json",
+    "receipt_sha256": "b8914862d9239411dbbe2cdc5976aa1975ad4607246d2f1329f796916fae166d"
   },
   "rope_cache": {
     "schema": "muser.vllm-rope-cache.v2",
@@ -210,7 +210,7 @@
     "tokenizer_sha256": "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
     "chat_template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
     "context_policy_sha256": "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",
-    "target_cache_identity_sha256": "a3bbd72fc16116322b5c9dc701f155d35349146b2af3e3b8465732b7df1eabd0",
+    "target_cache_identity_sha256": "c34ce9b3deabd53b69280b00a9d1098844b97ec854d230b9f4d556acd9d776a3",
     "repack_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/mac-native-repack-receipt-v1.json",
     "repack_receipt_sha256": "ccac21c54d765f62f15acf0c496b946cd129db5f6ca5f026be13cd5705e9da21"
   },

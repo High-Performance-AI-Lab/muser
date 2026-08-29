@@ -15,10 +15,10 @@
     "receipt_sha256": "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6"
   },
   "vllm_overlay": {
-    "adapter_sha256": "dc2e2f8e28f4aa19465b219a6ecc5676c55955efc63fff23a2036a1a158966ae",
+    "adapter_sha256": "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
     "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
-    "receipt": "muser-build-receipt://nvfp4-release-20260828/spark-producer-adapter-release-final3-20260828.json",
-    "receipt_sha256": "2162203fb1baeeb83a63a85f36c588fcaa0dc81df47cc610eb92a43248d3d7b2"
+    "receipt": "release/nvfp4-runtime-overlay-v2.json",
+    "receipt_sha256": "b8914862d9239411dbbe2cdc5976aa1975ad4607246d2f1329f796916fae166d"
   },
   "evidence": [
     "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path as FsPath, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,6 +66,7 @@ pub struct ServeError {
 #[derive(Clone)]
 struct AppState {
     server: Arc<ServerState>,
+    node_activator: Option<nodes_api::NodeActivator>,
     benchmark: Option<Arc<BenchmarkControl>>,
     api_key: Option<Arc<[u8]>>,
     lan: bool,
@@ -303,7 +304,7 @@ fn require_private_file(path: &FsPath, label: &str) -> Result<(), String> {
 }
 
 pub fn serve(host: &str, port: u16, state: Arc<ServerState>) -> Result<(), ServeError> {
-    serve_inner(host, port, state, None, SecurityConfig::default())
+    serve_inner(host, port, state, None, None, SecurityConfig::default())
 }
 
 pub fn serve_secure(
@@ -312,7 +313,19 @@ pub fn serve_secure(
     state: Arc<ServerState>,
     security: SecurityConfig,
 ) -> Result<(), ServeError> {
-    serve_inner(host, port, state, None, security)
+    serve_inner(host, port, state, None, None, security)
+}
+
+/// Keep the setup dashboard bound while a successful Add Node run installs
+/// the prepared inference runtime into the same `ServerState`.
+pub fn serve_secure_with_node_activation(
+    host: &str,
+    port: u16,
+    state: Arc<ServerState>,
+    activator: nodes_api::NodeActivator,
+    security: SecurityConfig,
+) -> Result<(), ServeError> {
+    serve_inner(host, port, state, Some(activator), None, security)
 }
 
 pub fn serve_for_benchmark(
@@ -332,13 +345,14 @@ pub fn serve_for_benchmark(
         std::thread::sleep(Duration::from_secs(deadline_seconds));
         deadline.stop.store(true, Ordering::Release);
     });
-    serve_inner(host, port, state, Some(control), security)
+    serve_inner(host, port, state, None, Some(control), security)
 }
 
 fn serve_inner(
     host: &str,
     port: u16,
     server: Arc<ServerState>,
+    node_activator: Option<nodes_api::NodeActivator>,
     benchmark: Option<Arc<BenchmarkControl>>,
     security: SecurityConfig,
 ) -> Result<(), ServeError> {
@@ -390,6 +404,7 @@ fn serve_inner(
         let tls = tls_paths.is_some();
         let app_state = AppState {
             server,
+            node_activator,
             benchmark: benchmark.clone(),
             api_key,
             lan,
@@ -519,6 +534,7 @@ fn router(state: AppState) -> Router {
         .route("/v1/streams/lookup", post(resumable_stream_lookup))
         .route("/v1/chat/completions/control", post(reasoning_control))
         .route("/v1/dashboard/login", post(dashboard_login))
+        .route("/v1/dashboard/session", post(dashboard_session))
         .route("/v1/ws-tickets", post(websocket_ticket))
         .route("/v1/sessions", get(sessions_list).post(sessions_create))
         .route("/v1/sessions/{id}", get(session_get).delete(session_delete))
@@ -590,12 +606,71 @@ fn normalize_authority(request: &mut Request) -> Result<(), &'static str> {
     }
 }
 
-async fn dashboard() -> impl IntoResponse {
+/// A keyless server is permitted only on a loopback listener. Give the page
+/// it serves there a bounded HttpOnly session automatically, so the local
+/// Add Node button actually works from `muser serve` without asking for a key
+/// that command never created. Host must itself be a loopback literal or
+/// `localhost`; this prevents DNS rebinding from turning an arbitrary web
+/// origin into a trusted local dashboard.
+async fn dashboard(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     let mut response = Html(DASHBOARD_HTML).into_response();
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Some(origin) = keyless_loopback_dashboard_origin(&state, peer, &headers) {
+        if !valid_dashboard_cookie(&state, &headers, false, false) {
+            let session = random_secret();
+            let csrf = random_secret();
+            let now = Instant::now();
+            let mut sessions = state
+                .dashboard_sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions.retain(|_, entry| entry.expires > now);
+            sessions.insert(
+                session.clone(),
+                DashboardSession {
+                    csrf,
+                    origin,
+                    expires: now + Duration::from_secs(3600),
+                },
+            );
+            drop(sessions);
+            let cookie =
+                format!("muser_session={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=3600");
+            response.headers_mut().insert(
+                "set-cookie",
+                HeaderValue::from_str(&cookie).expect("generated cookie is ASCII"),
+            );
+        }
+    }
     response
+}
+
+fn keyless_loopback_dashboard_origin(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+) -> Option<String> {
+    if state.api_key.is_some() || state.lan || state.tls || !peer.ip().is_loopback() {
+        return None;
+    }
+    let host = single_header(headers, HOST.as_str())?;
+    let authority: axum::http::uri::Authority = host.parse().ok()?;
+    if authority.as_str() != host {
+        return None;
+    }
+    let hostname = authority.host();
+    let local = hostname.eq_ignore_ascii_case("localhost")
+        || hostname
+            .parse::<IpAddr>()
+            .ok()
+            .is_some_and(|address| address.is_loopback());
+    local.then(|| format!("http://{authority}"))
 }
 
 async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -741,15 +816,16 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .as_ref()
         .is_some_and(|runtime| runtime.slots.is_healthy());
     if healthy {
-        Json(serde_json::json!({"status": "ok"})).into_response()
+        Json(serde_json::json!({"status": "ok", "engine_phase": "ready"})).into_response()
     } else {
+        let lifecycle = state.server.runtime_lifecycle();
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": {
                 "code": 503,
-                "message": if state.server.inference.is_some() { "Inference engine unavailable" } else { "Loading model" },
-                "type": "unavailable_error"
-            }})),
+                "message": if state.server.inference.is_some() { "Inference engine unavailable" } else { lifecycle.detail.as_str() },
+                "type": if state.server.inference.is_some() { "unavailable_error" } else { "engine_starting" }
+            }, "engine_phase": lifecycle.phase, "node": lifecycle.node})),
         )
             .into_response()
     }
@@ -757,6 +833,7 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
 async fn healthz(State(state): State<AppState>) -> Response {
     state.server.record_request();
+    let lifecycle = state.server.runtime_lifecycle();
     let engine_healthy = state
         .server
         .inference
@@ -769,7 +846,13 @@ async fn healthz(State(state): State<AppState>) -> Response {
     };
     (
         status,
-        Json(serde_json::json!({"ok": engine_healthy, "degraded": state.server.degraded(), "accelerator_in_use": state.server.inference.is_some()})),
+        Json(serde_json::json!({
+            "ok": engine_healthy,
+            "degraded": state.server.degraded(),
+            "accelerator_in_use": state.server.inference.is_some(),
+            "engine_phase": lifecycle.phase,
+            "ready": state.server.inference.is_some() && engine_healthy,
+        })),
     )
         .into_response()
 }
@@ -799,7 +882,7 @@ async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "n_ctx_train": config.context_length,
             "n_embd": config.hidden_dim,
             "n_params": 27_854_794_240_u64,
-            "size": state.server.model_bytes.unwrap_or_default(),
+            "size": state.server.model_bytes().unwrap_or_default(),
             "ftype": "Q4_K - Medium"
         })
     });
@@ -842,15 +925,11 @@ async fn props(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
     state.server.record_request();
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     let default_params = default_generation_params(runtime.max_context);
     Json(serde_json::json!({
-        "model_path": state.server.model_path,
+        "model_path": state.server.model_path(),
         "total_slots": runtime.slots.len(),
         "default_generation_settings": {"params": default_params, "n_ctx": runtime.max_context},
         "model_alias": "muse-glimmer-30b",
@@ -1031,11 +1110,7 @@ async fn slots_get(
     }
     state.server.record_request();
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     match runtime.slots.status(runtime.max_context) {
         Ok(slots) => {
@@ -1098,11 +1173,7 @@ async fn slots_action(State(state): State<AppState>, headers: HeaderMap, body: B
     match request.action.as_str() {
         "erase" => {
             let Some(runtime) = state.server.inference.as_ref() else {
-                return error_json(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "model_not_loaded",
-                    "model is not loaded",
-                );
+                return inference_unavailable(&state.server);
             };
             let Some(id) = request.id else {
                 return error_json(
@@ -1202,11 +1273,7 @@ async fn slots_compat_action(
         return auth_required();
     }
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     state.server.record_request();
     if query.action == "erase" {
@@ -1254,7 +1321,7 @@ async fn slots_compat_action(
         let n_saved = slot.target.position;
         let envelope = SlotCompatEnvelope {
             schema: "muser.slot-file.v1".into(),
-            model_sha256: state.server.model_sha256.clone().unwrap_or_default(),
+            model_sha256: state.server.model_sha256().unwrap_or_default().to_string(),
             tokenizer_sha256: runtime.model.tokenizer_metadata_sha256(),
             template_sha256: runtime.model.chat_template_sha256(),
             layout_abi: "muse-kv-layout-v1".into(),
@@ -1330,7 +1397,7 @@ async fn slots_compat_action(
         }
     };
     if envelope.schema != "muser.slot-file.v1"
-        || envelope.model_sha256 != state.server.model_sha256.as_deref().unwrap_or_default()
+        || envelope.model_sha256 != state.server.model_sha256().unwrap_or_default()
         || envelope.tokenizer_sha256 != runtime.model.tokenizer_metadata_sha256()
         || envelope.template_sha256 != runtime.model.chat_template_sha256()
         || envelope.layout_abi != "muse-kv-layout-v1"
@@ -1406,11 +1473,7 @@ async fn tokenize(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Err(response) => return response,
     };
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     let mut tokens = Vec::new();
     match request.content {
@@ -1489,11 +1552,7 @@ async fn detokenize(State(state): State<AppState>, headers: HeaderMap, body: Byt
         Err(response) => return response,
     };
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     if request
         .tokens
@@ -1536,11 +1595,7 @@ async fn apply_template(
         Err(response) => return response,
     };
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     let messages = serde_json::to_value(&request.messages).expect("messages serialize");
     let date = &crate::timefmt::now_rfc3339()[..10];
@@ -1871,11 +1926,7 @@ async fn completion(
         Err(response) => return response,
     };
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     let native = uri.path() != "/v1/completions";
     let prompts = match completion_prompts(&runtime.model, request.prompt) {
@@ -2446,11 +2497,7 @@ async fn ollama_generate(
         }
     };
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     if request.model != "muse-glimmer-30b" {
         return error_json(
@@ -2839,11 +2886,7 @@ async fn embeddings(
         );
     }
     let Some(runtime) = state.server.inference.as_ref() else {
-        return error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "model_not_loaded",
-            "model is not loaded",
-        );
+        return inference_unavailable(&state.server);
     };
     let width = runtime.model.config().hidden_dim;
     if request
@@ -3457,7 +3500,7 @@ async fn nodes_create(
             "Content-Type must be exactly application/json",
         );
     }
-    let reply = nodes_api::create(&state.server, &body);
+    let reply = nodes_api::create(&state.server, &body, state.node_activator.clone());
     reply_response(reply)
 }
 
@@ -3584,6 +3627,40 @@ async fn dashboard_login(State(state): State<AppState>, headers: HeaderMap) -> R
         "set-cookie",
         HeaderValue::from_str(&cookie).expect("generated cookie is ASCII"),
     );
+    response
+}
+
+/// Return the CSRF value for an already-minted HttpOnly dashboard session.
+/// This is used after a refresh and by the automatic loopback session. The
+/// request must be an exact same-origin POST; possessing a cookie alone from
+/// another origin is insufficient.
+async fn dashboard_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let exact_origin = single_header(&headers, ORIGIN.as_str())
+        .zip(request_origin(&state, &headers))
+        .is_some_and(|(supplied, expected)| supplied == expected);
+    if !exact_origin || !valid_dashboard_cookie(&state, &headers, true, false) {
+        return auth_required();
+    }
+    let Some(session_id) = cookie_value(&headers, "muser_session") else {
+        return auth_required();
+    };
+    let csrf = state
+        .dashboard_sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(session_id)
+        .map(|session| session.csrf.clone());
+    let Some(csrf) = csrf else {
+        return auth_required();
+    };
+    let mut response = Json(serde_json::json!({
+        "csrf_token": csrf,
+        "expires_in": 3600,
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -4321,9 +4398,9 @@ fn session_identity(server: &ServerState) -> Result<SessionIdentity, String> {
         .as_ref()
         .ok_or("inference is unavailable")?;
     let model = server
-        .model_sha256
-        .clone()
+        .model_sha256()
         .filter(|value| !value.is_empty())
+        .map(str::to_string)
         .ok_or("verified model identity is unavailable")?;
     Ok(SessionIdentity {
         model,
@@ -4982,12 +5059,19 @@ fn sse_response(body: Body) -> Response {
 }
 
 fn chat_error(error: openai::ChatError) -> Response {
+    let producer_busy = matches!(error, openai::ChatError::ProducerBusy);
     let (status, _, kind) = error.status();
-    error_json(
+    let mut response = error_json(
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         kind,
         &error.to_string(),
-    )
+    );
+    if producer_busy {
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static("1"));
+    }
+    response
 }
 
 fn error_json(status: StatusCode, kind: &str, message: &str) -> Response {
@@ -4996,6 +5080,17 @@ fn error_json(status: StatusCode, kind: &str, message: &str) -> Response {
         Json(serde_json::json!({"error": {"type": kind, "message": message}})),
     )
         .into_response()
+}
+
+fn inference_unavailable(server: &ServerState) -> Response {
+    let lifecycle = server.runtime_lifecycle();
+    let kind = match lifecycle.phase {
+        "setup" => "engine_setup_required",
+        "loading" => "engine_starting",
+        "failed" => "engine_start_failed",
+        _ => "model_not_loaded",
+    };
+    error_json(StatusCode::SERVICE_UNAVAILABLE, kind, &lifecycle.detail)
 }
 
 fn reply_response(reply: nodes_api::Reply) -> Response {
@@ -5012,6 +5107,7 @@ mod tests {
     fn security_test_state(tls: bool) -> AppState {
         AppState {
             server: Arc::new(ServerState::new(None)),
+            node_activator: None,
             benchmark: None,
             api_key: None,
             lan: true,
@@ -5046,10 +5142,105 @@ mod tests {
         // The chat pane is the one dashboard surface that drives an inference
         // route rather than a management route; pin it to the same-origin
         // streaming endpoint and to textContent token insertion.
-        assert!(DASHBOARD_HTML.contains("ENDPOINT+\"/v1/chat/completions\""));
+        assert!(DASHBOARD_HTML.contains("base+\"/v1/chat/completions\""));
+        assert!(DASHBOARD_HTML.contains("const startedAt=performance.now(), base=apiBase()"));
         assert!(DASHBOARD_HTML.contains("data===\"[DONE]\""));
-        assert!(DASHBOARD_HTML.contains(".textContent+=d.content"));
-        assert!(!DASHBOARD_HTML.contains("innerHTML+=d."));
+        assert!(DASHBOARD_HTML.contains("assistant.output.textContent+=delta.content"));
+        assert!(DASHBOARD_HTML.contains(
+            "if(typeof delta.reasoning_content===\"string\" && delta.reasoning_content){\n          if(ttftMs==null) ttftMs=performance.now()-startedAt;"
+        ));
+        assert!(DASHBOARD_HTML.contains("if(!contentStarted){"));
+        assert!(DASHBOARD_HTML.contains("headers[\"x-csrf-token\"]=dashboardCsrf"));
+        assert!(!DASHBOARD_HTML.contains("innerHTML+=delta."));
+    }
+
+    #[test]
+    fn dashboard_chat_scrolls_without_moving_the_inference_panels() {
+        assert!(DASHBOARD_HTML.contains(
+            "#chatPanel{block-size:clamp(380px,44vh,430px);block-size:clamp(380px,44dvh,430px);"
+        ));
+        assert!(DASHBOARD_HTML.contains(".chatwrap{display:flex;flex:1 1 auto;min-height:0;"));
+        assert!(DASHBOARD_HTML.contains(".chatlog{display:flex;flex:1 1 auto;min-height:0;"));
+        assert!(DASHBOARD_HTML.contains("overscroll-behavior:contain;scrollbar-gutter:stable"));
+        assert!(!DASHBOARD_HTML.contains("max-height:400px"));
+    }
+
+    #[test]
+    fn dashboard_add_node_uses_the_active_management_credential() {
+        // Automatic loopback sign-in is an HttpOnly cookie plus CSRF token,
+        // even though the page itself is served over HTTP. Selecting auth by
+        // URL scheme made the button send an empty Bearer value and fail 401.
+        assert!(DASHBOARD_HTML
+            .contains("if(dashboardBearer) authHeaders.authorization=\"Bearer \"+dashboardBearer"));
+        assert!(DASHBOARD_HTML
+            .contains("else if(dashboardCsrf) authHeaders[\"x-csrf-token\"]=dashboardCsrf"));
+        assert!(!DASHBOARD_HTML.contains("const authHeaders = location.protocol===\"https:\""));
+    }
+
+    #[test]
+    fn dashboard_shows_truthful_native_startup_milestones() {
+        for phase in [
+            "Engine setup",
+            "Load weights",
+            "Init 8K chunks",
+            "Allocate 128K KV",
+            "Warm first request",
+            "Ready",
+        ] {
+            assert!(DASHBOARD_HTML.contains(phase), "missing phase: {phase}");
+        }
+        assert!(DASHBOARD_HTML.contains("raw.data.native_startup"));
+        assert!(DASHBOARD_HTML.contains("role=\"progressbar\""));
+        assert!(DASHBOARD_HTML.contains("Startup milestones, not a time estimate"));
+    }
+
+    #[test]
+    fn dashboard_onboarding_is_one_field_and_waits_for_activation() {
+        assert!(DASHBOARD_HTML.contains("id=\"wzTarget\""));
+        assert!(DASHBOARD_HTML.contains("function parseTarget(text)"));
+        assert!(DASHBOARD_HTML.contains("value.lastIndexOf(\"@\")"));
+        assert!(!DASHBOARD_HTML.contains("id=\"wzHost\""));
+        assert!(!DASHBOARD_HTML.contains("id=\"wzUser\""));
+        assert!(DASHBOARD_HTML.contains(r#"[...ONBOARDING_STEPS,"activate"]"#));
+        assert!(DASHBOARD_HTML.contains("accepted.activates_inference"));
+        assert!(
+            DASHBOARD_HTML.contains("The producer and Mac decoder are ready on the same server")
+        );
+    }
+
+    #[test]
+    fn embedded_dashboard_is_the_tabbed_lab_console() {
+        for tab in ["fleet", "inference", "activity", "history"] {
+            assert!(
+                DASHBOARD_HTML.contains(&format!("id=\"tab-{tab}\"")),
+                "missing {tab} tab"
+            );
+            assert!(DASHBOARD_HTML.contains(&format!("id=\"page-{tab}\" role=\"tabpanel\"")));
+        }
+        for surface in ["chatPanel", "chatInput", "pipe", "sessRows", "histGrid"] {
+            assert!(
+                DASHBOARD_HTML.contains(&format!("id=\"{surface}\"")),
+                "missing {surface}"
+            );
+        }
+        assert!(DASHBOARD_HTML.contains("role=\"tablist\""));
+        assert!(DASHBOARD_HTML.contains("async function restoreDashboardSession()"));
+        assert!(!DASHBOARD_HTML.contains(
+            "async function restoreDashboardSession(){\n  if(location.protocol!==\"https:\")"
+        ));
+    }
+
+    #[test]
+    fn producer_contention_is_an_explicit_retryable_http_response() {
+        let response = chat_error(openai::ChatError::ProducerBusy);
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
     }
 
     #[test]
@@ -5074,6 +5265,33 @@ mod tests {
         );
         headers.append(HOST, HeaderValue::from_static("second.local"));
         assert!(request_origin(&state, &headers).is_none());
+    }
+
+    #[test]
+    fn automatic_dashboard_sessions_are_confined_to_literal_loopback() {
+        let mut state = security_test_state(false);
+        state.lan = false;
+        let peer: SocketAddr = "127.0.0.1:51000".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:4949"));
+        assert_eq!(
+            keyless_loopback_dashboard_origin(&state, peer, &headers).as_deref(),
+            Some("http://127.0.0.1:4949")
+        );
+
+        headers.insert(HOST, HeaderValue::from_static("localhost:4949"));
+        assert_eq!(
+            keyless_loopback_dashboard_origin(&state, peer, &headers).as_deref(),
+            Some("http://localhost:4949")
+        );
+        headers.insert(HOST, HeaderValue::from_static("attacker.example:4949"));
+        assert!(keyless_loopback_dashboard_origin(&state, peer, &headers).is_none());
+
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:4949"));
+        let remote: SocketAddr = "192.0.2.10:51000".parse().unwrap();
+        assert!(keyless_loopback_dashboard_origin(&state, remote, &headers).is_none());
+        state.api_key = Some(Arc::from(&b"configured"[..]));
+        assert!(keyless_loopback_dashboard_origin(&state, peer, &headers).is_none());
     }
 
     #[test]

@@ -34,6 +34,9 @@ pub fn run(home: &std::path::Path, json: bool) -> Result<()> {
             .map(|(entry, live)| {
                 let mut object = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
                 if let Some(map) = object.as_object_mut() {
+                    // Internal cache receipt: useful in the private registry,
+                    // not part of the status or dashboard API.
+                    map.remove("consumer_validation");
                     map.insert("daemon_port".into(), serde_json::json!(DAEMON_PORT));
                     map.insert("daemon_alive".into(), serde_json::json!(live.is_some()));
                     map.insert(

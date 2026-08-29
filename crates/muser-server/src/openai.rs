@@ -31,8 +31,8 @@ use crate::grammar::{json_object_gbnf, json_schema_to_gbnf, quoted_literal, Gram
 use crate::session::Origin;
 use crate::session_store::{BeginMutation, CachedGeneration, SamplerStateSnapshot, SessionBundle};
 use crate::state::{
-    ContextPolicy, InferenceRuntime, RemotePrefillMode, RemotePrefillRuntime, ServerState,
-    SlotAcquireError, SlotPermit,
+    remote_producer_is_busy, ContextPolicy, InferenceRuntime, RemotePrefillMode,
+    RemotePrefillRuntime, ServerState, SlotAcquireError, SlotPermit,
 };
 
 const MODEL_ID: &str = "muse-glimmer-30b";
@@ -644,12 +644,16 @@ pub enum ChatError {
     BadRequest(String),
     #[error("model '{0}' is not loaded")]
     ModelUnavailable(String),
+    #[error("{0}")]
+    Starting(String),
     #[error("generation failed: {0}")]
     Engine(String),
     #[error("client disconnected")]
     Cancelled,
     #[error("the accelerator lease is busy; retry shortly")]
     Overloaded,
+    #[error("the remote prefill producer is busy; retry shortly")]
+    ProducerBusy,
     #[error("the accelerator state is unhealthy; restart the server")]
     Unavailable,
     #[error("session conflict: {0}")]
@@ -661,9 +665,11 @@ impl ChatError {
         match self {
             Self::BadRequest(_) => (400, "Bad Request", "invalid_request_error"),
             Self::ModelUnavailable(_) => (404, "Not Found", "model_not_found"),
+            Self::Starting(_) => (503, "Service Unavailable", "engine_starting"),
             Self::Engine(_) => (500, "Internal Server Error", "generation_error"),
             Self::Cancelled => (499, "Client Closed Request", "cancelled"),
             Self::Overloaded => (429, "Too Many Requests", "rate_limit_exceeded"),
+            Self::ProducerBusy => (429, "Too Many Requests", "producer_busy"),
             Self::Unavailable => (503, "Service Unavailable", "engine_unavailable"),
             Self::Conflict(_) => (409, "Conflict", "conflict"),
         }
@@ -1268,7 +1274,7 @@ pub fn response_many(
 pub fn precheck(state: &ServerState, request: &ChatRequest) -> Result<(), ChatError> {
     validate_request(request)?;
     if state.inference.is_none() {
-        return Err(ChatError::ModelUnavailable(request.model.clone()));
+        return Err(ChatError::Starting(state.runtime_lifecycle().detail));
     }
     Ok(())
 }
@@ -1513,7 +1519,7 @@ pub fn generate_events(
         let expected_vision = (!bundle.vision_rows.is_empty())
             .then_some(runtime.vision_identity.as_ref())
             .flatten();
-        if bundle.model_sha256 != state.model_sha256.as_deref().unwrap_or_default()
+        if bundle.model_sha256 != state.model_sha256().unwrap_or_default()
             || bundle.tokenizer_sha256 != runtime.model.tokenizer_metadata_sha256()
             || bundle.template_sha256 != runtime.model.chat_template_sha256()
             || bundle.layout_abi != "muse-kv-layout-v1"
@@ -1905,6 +1911,9 @@ pub fn generate_events(
                                 session.reset();
                             }
                             Some(Err(error)) if remote.mode() == RemotePrefillMode::Required => {
+                                if remote_producer_is_busy(&error) {
+                                    return Err(ChatError::ProducerBusy);
+                                }
                                 state.record_remote_failure(&error);
                                 eprintln!("muser-server: required remote prefill failed: {error}");
                                 return Err(ChatError::Engine(format!(
@@ -2164,6 +2173,9 @@ pub fn generate_events(
                             state.economics.record_prefill_suffix(1);
                         }
                         Err(error) if remote.mode() == RemotePrefillMode::Required => {
+                            if remote_producer_is_busy(&error) {
+                                return Err(ChatError::ProducerBusy);
+                            }
                             state.record_remote_failure(&error);
                             eprintln!("muser-server: required remote prefill failed: {error}");
                             return Err(ChatError::Engine(format!(
@@ -2686,7 +2698,7 @@ pub fn generate_events(
                 session_id: id.into(),
                 revision: expected_revision,
                 context_epoch: committed_context_epoch,
-                model_sha256: state.model_sha256.clone().unwrap_or_default(),
+                model_sha256: state.model_sha256().unwrap_or_default().to_string(),
                 tokenizer_sha256: runtime.model.tokenizer_metadata_sha256(),
                 template_sha256: runtime.model.chat_template_sha256(),
                 layout_abi: "muse-kv-layout-v1".into(),
@@ -6082,6 +6094,14 @@ mod tests {
         let (status, _, kind) = ChatError::Overloaded.status();
         assert_eq!(status, 429);
         assert_eq!(kind, "rate_limit_exceeded");
+
+        let (status, _, kind) = ChatError::ProducerBusy.status();
+        assert_eq!(status, 429);
+        assert_eq!(kind, "producer_busy");
+        assert!(ChatError::ProducerBusy
+            .json()
+            .to_string()
+            .contains("retry shortly"));
     }
 
     #[test]

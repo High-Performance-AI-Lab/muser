@@ -216,59 +216,96 @@ impl Ssh {
         ))
     }
 
-    /// The hostname ssh would actually dial, from `ssh -G`. Resolves
-    /// ~/.ssh/config aliases that plain getaddrinfo cannot; falls back to the
-    /// literal host when ssh gives nothing usable.
-    pub fn effective_host(&self) -> String {
+    /// The expanded OpenSSH configuration for this exact user/host pair.
+    /// `ssh -G` does not connect; it is the only reliable way to respect
+    /// `HostName`, `Match user`, `ProxyJump`, and `ProxyCommand` without
+    /// trying to reimplement OpenSSH's configuration language.
+    fn expanded_config(&self) -> Option<ExpandedConfig> {
         let mut command = Command::new("ssh");
         command.arg("-G");
         if let Some(key) = &self.key_path {
             command.arg("-i").arg(key);
         }
         command.arg(format!("{}@{}", self.user, self.host));
-        if let Ok(output) = command.output() {
-            if output.status.success() {
-                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                    if let Some(rest) = line.strip_prefix("hostname ") {
-                        let candidate = rest.trim();
-                        if !candidate.is_empty() {
-                            return candidate.to_string();
-                        }
-                    }
-                }
-            }
+        let output = command.output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| parse_expanded_config(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// The hostname ssh would actually dial, from `ssh -G`. Resolves
+    /// ~/.ssh/config aliases that plain getaddrinfo cannot; falls back to the
+    /// literal host when ssh gives nothing usable.
+    pub fn effective_host(&self) -> String {
+        self.expanded_config()
+            .and_then(|config| config.hostname)
+            .unwrap_or_else(|| self.host.clone())
+    }
+
+    /// Handoff V2 is a pair of direct data-plane TCP connections; it is not
+    /// tunneled through the SSH control connection. With ProxyJump or
+    /// ProxyCommand, `$SSH_CLIENT` on the GX10 names the intermediary rather
+    /// than this Mac, so continuing would spend minutes deploying a producer
+    /// that cannot call its receiver back. Reject that topology in preflight.
+    pub fn require_direct_data_path(&self) -> Result<()> {
+        let Some(config) = self.expanded_config() else {
+            return Ok(());
+        };
+        let proxy = config.proxy_jump.or(config.proxy_command);
+        if let Some(proxy) = proxy.filter(|value| !value.eq_ignore_ascii_case("none")) {
+            return Err(format!(
+                "SSH target {} uses a proxy ({proxy}); the released topology needs direct TCP Mac→GX10 on port 29591 and GX10→Mac on port 29590, and an SSH proxy would advertise the intermediary as the receiver — use a direct LAN SSH Host entry",
+                self.target()
+            ));
         }
-        self.host.clone()
+        Ok(())
     }
 
     /// One TCP connect, timed. Used for the daemon port wait, the live
     /// status probe, and the RTT estimate.
     pub fn tcp_probe(&self, port: u16, timeout: Duration) -> Result<Duration> {
-        let address = match (self.host.as_str(), port).to_socket_addrs() {
-            Ok(mut addresses) => addresses.next(),
-            Err(_) => None,
-        };
-        let address = match address {
-            Some(address) => address,
-            // The host may be an ssh alias getaddrinfo cannot see.
-            None => {
-                let effective = self.effective_host();
-                (effective.as_str(), port)
-                    .to_socket_addrs()
-                    .map_err(|error| {
-                        format!("resolve {}:{port} (via {effective}): {error}", self.host)
-                    })?
-                    .next()
-                    .ok_or_else(|| {
-                        format!("{}:{port} ({effective}) resolved to no address", self.host)
-                    })?
-            }
-        };
+        // Always honor OpenSSH's HostName. Trying the alias through
+        // getaddrinfo first can silently probe a different machine when a
+        // local DNS/mDNS name happens to collide with an ssh-config alias.
+        let effective = self.effective_host();
+        let address = (effective.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|error| format!("resolve {}:{port} (via {effective}): {error}", self.host))?
+            .next()
+            .ok_or_else(|| format!("{}:{port} ({effective}) resolved to no address", self.host))?;
         let started = Instant::now();
         TcpStream::connect_timeout(&address, timeout)
             .map_err(|error| format!("connect {address}: {error}"))?;
         Ok(started.elapsed())
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ExpandedConfig {
+    hostname: Option<String>,
+    proxy_jump: Option<String>,
+    proxy_command: Option<String>,
+}
+
+fn parse_expanded_config(output: &str) -> ExpandedConfig {
+    let mut config = ExpandedConfig::default();
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "hostname" => config.hostname = Some(value.to_string()),
+            "proxyjump" => config.proxy_jump = Some(value.to_string()),
+            "proxycommand" => config.proxy_command = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    config
 }
 
 /// `user@host`, both halves inside their closed grammars.
@@ -371,5 +408,19 @@ mod tests {
         assert!(validate_remote_path("relative/path").is_err());
         assert!(validate_remote_path("/lane/../etc").is_err());
         assert!(validate_remote_path("/home/muser/.muser/lane/gx10").is_ok());
+    }
+
+    #[test]
+    fn expanded_config_keeps_the_real_host_and_proxy_boundary() {
+        let direct = parse_expanded_config("host gx10\nhostname 192.0.2.201\nproxyusefdpass no\n");
+        assert_eq!(direct.hostname.as_deref(), Some("192.0.2.201"));
+        assert!(direct.proxy_jump.is_none());
+        assert!(direct.proxy_command.is_none());
+
+        let jumped = parse_expanded_config(
+            "hostname 10.0.0.4\nproxyjump bastion.example\nproxycommand none\n",
+        );
+        assert_eq!(jumped.proxy_jump.as_deref(), Some("bastion.example"));
+        assert_eq!(jumped.proxy_command.as_deref(), Some("none"));
     }
 }

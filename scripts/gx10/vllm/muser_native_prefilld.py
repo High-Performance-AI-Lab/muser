@@ -34,13 +34,52 @@ SCHEMA = "muser.native-prefilld.v1"
 RUNTIME_SCHEMA = "muser.native-onboarding-identity.v1"
 ROPE_CACHE_SCHEMA = "muser.vllm-rope-cache.v2"
 SOURCE_RUNTIME_IDENTITY_SHA256 = (
-    "ad56da2b13767162f612491299fac062352933b2f6f7c9574b276ff16bf18264"
+    "e2485c468d4467edccc8385cf62545216970df7b8eef6ecd2b10be5fe0a68ee7"
 )
 PRODUCER_CONFIG_SCHEMA = "muser.spark-nvfp4-producer-config.v1"
 PRODUCER_RECEIPT_SCHEMA = "muser.spark-nvfp4-prefill.v2"
 CLIENT_RECEIPT_SCHEMA = "muser.spark-nvfp4-prefill-client.v1"
 REQUEST_SCRIPT = "/opt/muser/scripts/gx10/vllm/request_producer.py"
 NODE_GPU_LOCK = "/tmp/ferrite.gpu.lock"
+MAX_MODEL_TOKENS = 131_072
+# vLLM profiles this shape during every cold engine start. Keeping it equal to
+# MAX_MODEL_TOKENS spends roughly two unnecessary minutes profiling a 128K
+# batch on GB10. The connector is qualified to accumulate ordinary vLLM
+# chunks and exports the complete cache only on the final chunk.
+STARTUP_BATCH_TOKENS = 8_192
+
+# The released image is the immutable CUDA/vLLM dependency root. Muser's
+# much smaller Python runtime is deployed beside this daemon, integrity-bound
+# by the enrollment runtime digest, and mounted read-only over the copy baked
+# into the image. This lets a source clone actually run the code it deployed
+# without rebuilding or downloading another ~10 GB image for every fix.
+CONTAINER_OVERLAY_MOUNTS = (
+    (SCRIPT_DIR / "resident_producer.py", "/opt/muser/scripts/gx10/vllm/resident_producer.py"),
+    (SCRIPT_DIR / "request_producer.py", "/opt/muser/scripts/gx10/vllm/request_producer.py"),
+    (SCRIPT_DIR / "muser_vllm", "/opt/muser/scripts/gx10/vllm/muser_vllm"),
+    (LLAMACPP_DIR / "muser_v2_send.py", "/opt/muser/scripts/gx10/llamacpp/muser_v2_send.py"),
+    (
+        LLAMACPP_DIR / "llamacpp_session_send.py",
+        "/opt/muser/scripts/gx10/llamacpp/llamacpp_session_send.py",
+    ),
+    (LLAMACPP_DIR / "protocol.py", "/opt/muser/scripts/gx10/llamacpp/protocol.py"),
+)
+DEPLOYED_LLAMACPP_FILES = (
+    "muser_prefilld.py",
+    "muser-prefilld",
+    "muser-prefilld.service",
+    "muser_v2_send.py",
+    "llamacpp_session_send.py",
+    "protocol.py",
+    "muser_prefill_producer.sh",
+    "muse-glimmer-30b.layout.json",
+)
+DEPLOYED_VLLM_FILES = (
+    "muser_native_prefilld.py",
+    "resident_producer.py",
+    "request_producer.py",
+    "Dockerfile",
+)
 
 
 class NativePrefilldError(RuntimeError):
@@ -91,6 +130,72 @@ def regular_file(path: Path, label: str) -> None:
         raise NativePrefilldError(f"{label} is unavailable: {path}: {error}") from error
     if not stat.S_ISREG(mode) or path.is_symlink():
         raise NativePrefilldError(f"{label} is not a regular file: {path}")
+
+
+def runtime_overlay_mounts() -> list[tuple[Path, str]]:
+    """Resolve one immutable set of host runtime paths for Docker.
+
+    A package directory is mounted as a directory because Python imports a
+    closed set of modules from it. Every shipped module is already included
+    in the Mac-side deployed-runtime digest; refusing symlinks here prevents
+    an activation from escaping that staged tree after enrollment.
+    """
+
+    resolved: list[tuple[Path, str]] = []
+    for source, target in CONTAINER_OVERLAY_MOUNTS:
+        try:
+            mode = source.lstat().st_mode
+        except OSError as error:
+            raise NativePrefilldError(
+                f"native runtime overlay is unavailable: {source}: {error}"
+            ) from error
+        if source.is_symlink() or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+            raise NativePrefilldError(
+                f"native runtime overlay is not a regular file or directory: {source}"
+            )
+        resolved.append((source.resolve(strict=True), target))
+    return resolved
+
+
+def deployed_runtime_sha256() -> str:
+    """Reproduce the Mac deployer's content root over the staged lane.
+
+    The registry digest is not merely bookkeeping: enrollment sends it to
+    this daemon, and the daemon recomputes it before mounting any staged code
+    into the immutable dependency image. A partial copy or post-enrollment
+    edit therefore fails before CUDA is touched.
+    """
+
+    lane = SCRIPT_DIR.parent
+    files: list[tuple[str, Path]] = [
+        (f"llamacpp/{name}", LLAMACPP_DIR / name) for name in DEPLOYED_LLAMACPP_FILES
+    ]
+    files.append(("bootstrap_node.sh", lane / "bootstrap_node.sh"))
+    files.extend((f"vllm/{name}", SCRIPT_DIR / name) for name in DEPLOYED_VLLM_FILES)
+    package = SCRIPT_DIR / "muser_vllm"
+    try:
+        package_mode = package.lstat().st_mode
+    except OSError as error:
+        raise NativePrefilldError(f"native runtime package is unavailable: {error}") from error
+    if package.is_symlink() or not stat.S_ISDIR(package_mode):
+        raise NativePrefilldError("native runtime package is not a regular directory")
+    files.extend(
+        (f"vllm/muser_vllm/{path.name}", path)
+        for path in package.iterdir()
+        if path.suffix == ".py"
+    )
+    files.sort(key=lambda item: item[0])
+
+    digest = hashlib.sha256(b"muser.deployed-runtime.v1\0")
+    for logical_name, path in files:
+        regular_file(path, f"deployed runtime {logical_name}")
+        payload = path.read_bytes()
+        logical = logical_name.encode()
+        digest.update(len(logical).to_bytes(8, "big"))
+        digest.update(logical)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
 
 
 def load_runtime_identity(path: Path) -> dict[str, Any]:
@@ -160,6 +265,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "container_image",
         "container_name",
         "runtime_identity",
+        "runtime_sha256",
         "checkpoint_dir",
         "timeout_seconds",
         "max_context",
@@ -206,6 +312,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "context_policy_sha256",
         "adapter_sha256",
         "target_cache_identity_sha256",
+        "runtime_sha256",
         "receiver_leaf_sha256",
         "rope_cache_sha256",
     ):
@@ -274,6 +381,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if any(actual != wanted for actual, wanted in comparisons):
         raise NativePrefilldError("native handoff config differs from runtime identity")
     config["identity"] = identity
+    if deployed_runtime_sha256() != config["runtime_sha256"]:
+        raise NativePrefilldError("staged native runtime differs from enrollment digest")
     return config
 
 
@@ -455,28 +564,34 @@ def start_container(config: dict[str, Any]) -> Path:
         f"{pki_dir}:/run/muser/pki:ro",
         "-v",
         f"{config['work_dir']}:/run/muser/work",
-        config["container_image"],
-        "--model",
-        "/models/checkpoint",
-        "--config",
-        "/run/muser/config.json",
-        "--sock",
-        "/run/muser/work/producer.sock",
-        "--startup-receipt",
-        "/run/muser/work/native-startup-receipt.json",
-        "--lease-file",
-        NODE_GPU_LOCK,
-        "--rope-cache-output",
-        "/run/muser/work/native-rope-cache-f32le.bin",
-        "--max-model-len",
-        "131072",
-        "--max-num-batched-tokens",
-        "131072",
-        "--kv-cache-memory-bytes",
-        "8589934592",
-        "--gpu-memory-utilization",
-        "0.82",
     ]
+    for source, target in runtime_overlay_mounts():
+        command.extend(["-v", f"{source}:{target}:ro"])
+    command.extend(
+        [
+            config["container_image"],
+            "--model",
+            "/models/checkpoint",
+            "--config",
+            "/run/muser/config.json",
+            "--sock",
+            "/run/muser/work/producer.sock",
+            "--startup-receipt",
+            "/run/muser/work/native-startup-receipt.json",
+            "--lease-file",
+            NODE_GPU_LOCK,
+            "--rope-cache-output",
+            "/run/muser/work/native-rope-cache-f32le.bin",
+            "--max-model-len",
+            str(MAX_MODEL_TOKENS),
+            "--max-num-batched-tokens",
+            str(STARTUP_BATCH_TOKENS),
+            "--kv-cache-memory-bytes",
+            "8589934592",
+            "--gpu-memory-utilization",
+            "0.82",
+        ]
+    )
     started = docker(config, *command, check=False)
     if started.returncode != 0:
         raise NativePrefilldError(f"native container failed to start: {started.stderr[-1024:]}")
@@ -548,6 +663,24 @@ def cancel_inner_request(config: dict[str, Any], transfer_id: str) -> bool:
             return False
         time.sleep(0.05)
     return False
+
+
+def restore_request_slot_after_client_failure(
+    config: dict[str, Any], transfer_id: str
+) -> None:
+    """Do not accept the next control request until the inner slot is usable.
+
+    The request client has its own bounded socket timeout. If that client
+    exits first, the resident may still be finishing cancellation on the
+    engine thread. Merely observing a live container is therefore not a
+    readiness proof; require its idle marker or replace it exactly.
+    """
+    idle_path = Path(f"{config['producer_socket']}.idle")
+    if container_running(config) and idle_path.is_file():
+        return
+    if container_running(config) and cancel_inner_request(config, transfer_id):
+        return
+    recover_container(config, "failed native request did not return the warm slot to idle")
 
 
 def run_controlled_command(
@@ -727,8 +860,7 @@ def run_request(
             config, command, control_stream, transfer_id
         )
         if result.returncode != 0:
-            if not container_running(config):
-                recover_container(config, "native resident exited after request failure")
+            restore_request_slot_after_client_failure(config, transfer_id)
             raise NativePrefilldError(
                 f"native producer request failed ({result.returncode}): {result.stderr[-1024:]}"
             )

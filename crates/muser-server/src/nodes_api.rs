@@ -76,19 +76,23 @@ const TERMINAL_RETRY_MS: u64 = 3_600_000;
 const PROGRESS_SCHEMA: &str = "muser.node-progress.v2";
 const JOB_SCHEMA: &str = "muser.node-job.v1";
 
+/// Optional continuation supplied by `muser up`'s setup server. The regular
+/// `muser serve` management surface remains enrollment-only; the one-button
+/// launcher uses this callback to install the Mac decoder after the child has
+/// exited successfully and released the cross-process topology lock.
+pub(crate) type ActivationReporter = Arc<dyn Fn(&str, &str) + Send + Sync>;
+pub(crate) type NodeActivator =
+    Arc<dyn Fn(&str, ActivationReporter) -> Result<(), String> + Send + Sync>;
+
 // ===================================================================== paths
 
-/// `~/.muser`. Derived from `$HOME` and nothing else, because the child this
-/// server spawns inherits its environment: both halves must resolve the same
-/// registry, or the button would write one file and the dashboard read
-/// another. `None` when `$HOME` is unset, which is what makes node
-/// management report as unavailable in the `/health` ledger — without a home
-/// there is nowhere to keep the registry, the PKI material, or the progress
-/// logs.
+/// The same Muser home the node CLI resolves: `$MUSER_HOME` when set,
+/// otherwise `~/.muser`. The server and the child it spawns must call the
+/// same resolver or the button can write one registry while the dashboard
+/// reads another. `None` means neither location can be resolved, which makes
+/// node management report as unavailable in the `/health` ledger.
 pub(crate) fn muser_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".muser"))
+    crate::node::muser_home().ok()
 }
 
 /// The shared registry (contract: atomically written by the CLI, read here).
@@ -127,6 +131,8 @@ pub(crate) struct NodeEntry {
     pub(crate) lane_dir: Option<String>,
     pub(crate) container_image: Option<String>,
     pub(crate) container_receipt: Option<String>,
+    pub(crate) runtime_sha256: Option<String>,
+    pub(crate) consumer_model_path: Option<String>,
     pub(crate) pki_dir: Option<String>,
     pub(crate) hmac_key_id: Option<String>,
     pub(crate) hmac_epoch: Option<i64>,
@@ -287,6 +293,8 @@ fn assign(entry: &mut NodeEntry, key: &str, value: &Scalar) {
         "lane_dir" => entry.lane_dir = value.as_string(),
         "container_image" => entry.container_image = value.as_string(),
         "container_receipt" => entry.container_receipt = value.as_string(),
+        "runtime_sha256" => entry.runtime_sha256 = value.as_string(),
+        "consumer_model_path" => entry.consumer_model_path = value.as_string(),
         "pki_dir" => entry.pki_dir = value.as_string(),
         "hmac_key_id" => entry.hmac_key_id = value.as_string(),
         "hmac_epoch" => entry.hmac_epoch = value.as_int(),
@@ -579,7 +587,11 @@ fn error_reply(code: u16, reason: &'static str, kind: &str, message: &str) -> Re
 /// `POST /v1/nodes` — validate, claim the global job slot, spawn
 /// `muser node add` and return 202 immediately. The run itself is watched by
 /// a background thread; the browser follows it on the progress stream.
-pub(crate) fn create(state: &Arc<ServerState>, body: &[u8]) -> Reply {
+pub(crate) fn create(
+    state: &Arc<ServerState>,
+    body: &[u8],
+    activator: Option<NodeActivator>,
+) -> Reply {
     let request = match parse_add_request(body) {
         Ok(request) => request,
         Err(message) => return error_reply(400, "Bad Request", "invalid_request_error", &message),
@@ -631,10 +643,11 @@ pub(crate) fn create(state: &Arc<ServerState>, body: &[u8]) -> Reply {
         }
     };
 
+    let activates_inference = activator.is_some();
     let state = Arc::clone(state);
     let job_thread = Arc::clone(&job);
     std::thread::spawn(move || {
-        run_job(&job_thread, exe, request);
+        run_job(&job_thread, exe, request, activator);
         // The slot is released only after the child is reaped, so the 409
         // and the running-job flag stay true for the whole run.
         state.node_jobs.retire(&job_thread);
@@ -646,6 +659,7 @@ pub(crate) fn create(state: &Arc<ServerState>, body: &[u8]) -> Reply {
         body: serde_json::json!({
             "name": job.name,
             "progress": format!("/v1/nodes/{}/progress", job.name),
+            "activates_inference": activates_inference,
         })
         .to_string(),
     }
@@ -801,7 +815,12 @@ struct ChildOutcome {
     killed: bool,
 }
 
-fn run_job(job: &Arc<NodeJob>, exe: PathBuf, request: AddRequest) {
+fn run_job(
+    job: &Arc<NodeJob>,
+    exe: PathBuf,
+    request: AddRequest,
+    activator: Option<NodeActivator>,
+) {
     let transcript = open_progress_log(&job.name);
     if transcript.is_none() {
         job.push(server_line(
@@ -829,11 +848,55 @@ fn run_job(job: &Arc<NodeJob>, exe: PathBuf, request: AddRequest) {
     args.push("--json".into());
 
     let outcome = run_child(job, &exe, &args, &log);
-    let exit = summarize(&outcome);
+    let mut exit = summarize(&outcome);
+    activate_after_onboarding(job, &request, activator, &mut exit);
     if !exit.ok {
         eprintln!("muser-server: node {}: {}", job.name, exit.detail);
     }
     job.finish(exit);
+}
+
+fn activate_after_onboarding(
+    job: &Arc<NodeJob>,
+    request: &AddRequest,
+    activator: Option<NodeActivator>,
+    exit: &mut JobExit,
+) {
+    if !exit.ok || request.dry_run {
+        return;
+    }
+    let Some(activate) = activator else {
+        return;
+    };
+    job.push(server_line(
+        "activate",
+        "start",
+        "starting the Mac decoder on this dashboard",
+    ));
+    let reporter_job = Arc::clone(job);
+    let reporter: ActivationReporter = Arc::new(move |status, detail| {
+        reporter_job.push(server_line("activate", status, detail));
+    });
+    match activate(&request.name, reporter) {
+        Ok(()) => {
+            job.push(server_line(
+                "activate",
+                "ok",
+                "Mac decoder and remote prefill are ready on this dashboard",
+            ));
+            exit.detail = "node onboarding and Mac decoder activation finished".to_string();
+        }
+        Err(error) => {
+            job.push(server_line("activate", "fail", &error));
+            *exit = JobExit {
+                code: Some(1),
+                ok: false,
+                detail: format!(
+                    "node enrolled and smoke-tested, but Mac decoder activation failed: {error}"
+                ),
+            };
+        }
+    }
 }
 
 fn summarize(outcome: &ChildOutcome) -> JobExit {
@@ -1065,6 +1128,8 @@ pub(crate) fn list(state: &ServerState) -> Reply {
                 "lane_dir": entry.lane_dir,
                 "container_image": entry.container_image,
                 "container_receipt": entry.container_receipt,
+                "runtime_sha256": entry.runtime_sha256,
+                "consumer_model_path": entry.consumer_model_path,
                 "pki_dir": entry.pki_dir,
                 "hmac_key_id": entry.hmac_key_id,
                 "hmac_epoch": entry.hmac_epoch,
@@ -1269,6 +1334,8 @@ key_path = "/home/x/.ssh/id_ed25519"
 lane_dir = "/opt/muser/lane"
 container_image = "sha256:abc123"
 container_receipt = "/home/x/.muser/nodes/gx10/container.json"
+runtime_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+consumer_model_path = "/models/native.gguf"
 pki_dir = "/home/x/.muser/nodes/gx10/pki"
 hmac_key_id = "k1"
 hmac_epoch = 7
@@ -1294,6 +1361,14 @@ state = "draft"
         assert_eq!(first.user, "producer-1");
         assert_eq!(first.state.as_deref(), Some("healthy"));
         assert_eq!(first.container_image.as_deref(), Some("sha256:abc123"));
+        assert_eq!(
+            first.runtime_sha256.as_deref(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert_eq!(
+            first.consumer_model_path.as_deref(),
+            Some("/models/native.gguf")
+        );
         assert_eq!(first.hmac_epoch, Some(7));
         assert_eq!(first.netqual_gbps, Some(18.5));
         assert_eq!(first.netqual_rtt_ms, Some(0.42));
@@ -1608,5 +1683,77 @@ user = "nobody"
         assert_eq!(value["step"], "preflight");
         assert_eq!(value["status"], "fail");
         assert_eq!(value["detail"], "could not start");
+    }
+
+    #[test]
+    fn successful_onboarding_activates_the_same_dashboard_job() {
+        let job = Arc::new(NodeJob::new("gx10".to_string()));
+        let request = AddRequest {
+            name: "gx10".to_string(),
+            host: "gx10.example".to_string(),
+            user: "muser".to_string(),
+            key_path: None,
+            dry_run: false,
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_activation = Arc::clone(&calls);
+        let activator: NodeActivator = Arc::new(move |name, reporter| {
+            assert_eq!(name, "gx10");
+            calls_for_activation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            reporter("info", "loading verified Metal slots");
+            Ok(())
+        });
+        let mut exit = JobExit {
+            code: Some(0),
+            ok: true,
+            detail: "smoke passed".to_string(),
+        };
+
+        activate_after_onboarding(&job, &request, Some(activator), &mut exit);
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(exit.ok);
+        assert_eq!(
+            exit.detail,
+            "node onboarding and Mac decoder activation finished"
+        );
+        let lines = job.since(0).lines.join("\n");
+        assert!(lines.contains(r#""step":"activate","status":"start""#));
+        assert!(lines.contains("loading verified Metal slots"));
+        assert!(lines.contains(r#""step":"activate","status":"ok""#));
+    }
+
+    #[test]
+    fn activation_failure_is_terminal_and_dry_run_never_activates() {
+        let job = Arc::new(NodeJob::new("gx10".to_string()));
+        let mut request = AddRequest {
+            name: "gx10".to_string(),
+            host: "gx10.example".to_string(),
+            user: "muser".to_string(),
+            key_path: None,
+            dry_run: true,
+        };
+        let activator: NodeActivator = Arc::new(|_, _| panic!("dry run activated inference"));
+        let mut exit = JobExit {
+            code: Some(0),
+            ok: true,
+            detail: "planned".to_string(),
+        };
+        activate_after_onboarding(&job, &request, Some(activator), &mut exit);
+        assert!(job.since(0).lines.is_empty());
+        assert!(exit.ok);
+
+        request.dry_run = false;
+        let activator: NodeActivator =
+            Arc::new(|_, _| Err("receiver configuration disappeared".to_string()));
+        activate_after_onboarding(&job, &request, Some(activator), &mut exit);
+        assert!(!exit.ok);
+        assert_eq!(exit.code, Some(1));
+        assert!(exit.detail.contains("activation failed"));
+        assert!(job
+            .since(0)
+            .lines
+            .join("\n")
+            .contains(r#""step":"activate","status":"fail""#));
     }
 }

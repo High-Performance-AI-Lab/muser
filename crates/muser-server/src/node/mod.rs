@@ -11,7 +11,7 @@
 //! | `model`     | lane weights acquired and SHA-256 verified on the node |
 //! | `enroll`    | lab CA, both TLS leaves, a fresh HMAC key, and both handoff configs |
 //! | `daemon`    | the resident producer installed, started and listening |
-//! | `netqual` + `smoke` | three real 2048/256 lane-specific handoffs, and what the link did |
+//! | `netqual` + `smoke` | a bounded authenticated handoff, Metal decode, and what the link did |
 //!
 //! Three properties hold across all of them:
 //!
@@ -22,7 +22,8 @@
 //! - **State is one file.** `~/.muser/nodes.toml`, written temp+rename
 //!   (`registry.rs`). Key material lives in `pki_dir` at 0600, never here.
 //!
-//! `muser node add` exits 0 only when the smoke step passed.
+//! `muser node add` exits 0 only when the operational smoke passed. Full
+//! three-repetition evidence is an explicit `muser node qualify` command.
 
 pub mod artifacts;
 pub mod daemon;
@@ -37,17 +38,25 @@ pub mod smoke;
 pub mod ssh;
 pub mod status;
 
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::cli::{NodeAddArgs, NodeArgs, NodeCommand, NodeCommonArgs, NodeStepArgs};
 
 use self::artifacts::{ContainerReceipt, NativeIdentity, Release};
 use self::progress::{Progress, Status, Step};
-use self::registry::{NodeEntry, ProducerKind, Registry};
+use self::registry::{
+    NodeEntry, OperationLock, ProducerKind, Registry, DAEMON_PORT, STATE_HEALTHY,
+};
 use self::ssh::Ssh;
 
 pub type Result<T> = std::result::Result<T, String>;
 type StepRunner = fn(&Ctx, &mut NodeEntry) -> Result<()>;
+
+const REJOIN_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const REJOIN_ERROR_PREFIX: &str = "live rejoin probe failed without changing the node: ";
 
 /// Everything a step needs that is not the node itself.
 pub struct Ctx {
@@ -62,6 +71,10 @@ pub struct Ctx {
     pub model_source_base: Option<String>,
     pub prompt_fixture: Option<PathBuf>,
     pub lane_dir_override: Option<String>,
+    /// In-process proof that the immediately preceding model stage hashed the
+    /// native consumer. `node enroll` run on its own still rehashes; the full
+    /// pipeline does not read the same 19.6 GB twice.
+    verified_native_consumer: Mutex<Option<(PathBuf, String)>>,
 }
 
 impl Ctx {
@@ -84,6 +97,7 @@ impl Ctx {
             model_source_base: common.model_source_base.clone(),
             prompt_fixture: common.prompt_fixture.clone(),
             lane_dir_override: common.lane_dir.clone(),
+            verified_native_consumer: Mutex::new(None),
         })
     }
 
@@ -135,7 +149,14 @@ impl Ctx {
     pub fn qualify_binary(&self) -> PathBuf {
         match std::env::var_os("MUSER_REMOTE_QUALIFY") {
             Some(path) => PathBuf::from(path),
-            None => self.repo_root.join("target/release/muser-remote-qualify"),
+            None => std::env::current_exe()
+                .ok()
+                .and_then(|path| {
+                    path.parent()
+                        .map(|parent| parent.join("muser-remote-qualify"))
+                })
+                .filter(|path| path.is_file())
+                .unwrap_or_else(|| self.repo_root.join("target/release/muser-remote-qualify")),
         }
     }
 
@@ -162,6 +183,24 @@ impl Ctx {
         );
         crate::model::ensure_metallib(None).map_err(|error| error.to_string())
     }
+
+    pub fn remember_native_consumer(&self, path: &Path, sha256: &str) {
+        *self
+            .verified_native_consumer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((path.to_path_buf(), sha256.to_string()));
+    }
+
+    pub fn native_consumer_was_verified(&self, path: &Path, sha256: &str) -> bool {
+        self.verified_native_consumer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|(verified_path, verified_sha256)| {
+                verified_path == path && verified_sha256 == sha256
+            })
+    }
 }
 
 pub fn run(args: NodeArgs) -> Result<()> {
@@ -173,6 +212,7 @@ pub fn run(args: NodeArgs) -> Result<()> {
         NodeCommand::Enroll(args) => single(args, Step::Enroll, enroll::run),
         NodeCommand::Daemon(args) => single(args, Step::Daemon, daemon::run),
         NodeCommand::Smoke(args) => single(args, Step::Smoke, smoke::run),
+        NodeCommand::Qualify(args) => single(args, Step::Smoke, smoke::qualify),
         NodeCommand::Status(args) => status::run(&muser_home()?, args.json),
     }
 }
@@ -181,15 +221,36 @@ pub fn run(args: NodeArgs) -> Result<()> {
 /// entry, and leaves the exit code non-zero — the button never reports a
 /// node ready on the strength of five steps out of six.
 fn add(args: NodeAddArgs) -> Result<()> {
-    let ctx = Ctx::new(&args.common)?;
+    let mut ctx = Ctx::new(&args.common)?;
     let (user, host) = ssh::parse_target(&args.target)?;
     let name = match &args.name {
         Some(name) => name.clone(),
         None => default_name(&host),
     };
     ssh::validate_name(&name)?;
+    let _operation_lock = if ctx.dry_run {
+        None
+    } else {
+        Some(OperationLock::acquire(
+            &ctx.muser_home,
+            &format!("onboarding or repairing node {name}"),
+        )?)
+    };
 
     let mut registry = Registry::load(&ctx.muser_home)?;
+    let retired =
+        reject_duplicate_control_endpoint(&mut registry, &name, &user, &host, args.repair)?;
+    if !retired.is_empty() {
+        ctx.progress.emit(
+            Step::Preflight,
+            Status::Info,
+            &format!(
+                "repair retired stale registry alias{} {}; credentials were left on disk",
+                if retired.len() == 1 { "" } else { "es" },
+                retired.join(", ")
+            ),
+        );
+    }
     let mut entry = match registry.get(&name) {
         Some(existing) if existing.user == user && existing.host == host => existing.clone(),
         Some(existing) => {
@@ -206,6 +267,10 @@ fn add(args: NodeAddArgs) -> Result<()> {
             ctx.lane_dir_override.as_deref(),
         ),
     };
+    // A dashboard re-run has no `--model-dir` field. Preserve the directory
+    // that the previous verified model stage recorded instead of silently
+    // reverting to ~/.muser/models and downloading another 19.6 GB copy.
+    inherit_recorded_model_dir(&mut ctx, &entry);
     if let Some(key) = &args.key {
         entry.key_path = Some(key.display().to_string());
     }
@@ -213,20 +278,40 @@ fn add(args: NodeAddArgs) -> Result<()> {
     // `None`, the registry's pre-native shape); no flag leaves an existing
     // entry on the lane it was enrolled for. A new draft already selects
     // native explicitly.
+    let producer_changed = args
+        .producer
+        .is_some_and(|producer| producer != entry.producer_kind());
     if let Some(producer) = args.producer {
         entry.producer = (producer != ProducerKind::Llamacpp).then_some(producer);
     }
+    let lane_changed = ctx
+        .lane_dir_override
+        .as_ref()
+        .is_some_and(|lane| lane != &entry.lane_dir);
     if let Some(lane) = &ctx.lane_dir_override {
         ssh::validate_remote_path(lane)?;
         entry.lane_dir = lane.clone();
+    }
+
+    if !args.repair
+        && fast_rejoin_eligible(&ctx, &entry, producer_changed || lane_changed)?
+        && fast_rejoin(&ctx, &mut registry, &mut entry, &args.target)?
+    {
+        return Ok(());
     }
 
     ctx.progress.emit_data(
         Step::Preflight,
         Status::Info,
         &format!(
-            "onboarding {name} ({}@{}) — preflight, deploy, model, enroll, daemon, netqual, smoke",
-            entry.user, entry.host
+            "{} {name} ({}@{}) — preflight, deploy, model, enroll, daemon, netqual, smoke",
+            if args.repair {
+                "repairing"
+            } else {
+                "onboarding"
+            },
+            entry.user,
+            entry.host
         ),
         serde_json::json!({ "name": name, "dry_run": ctx.dry_run, "lane_dir": entry.lane_dir }),
     );
@@ -267,10 +352,252 @@ fn add(args: NodeAddArgs) -> Result<()> {
     ctx.progress.emit_data(
         Step::Smoke,
         Status::Ok,
-        &format!("{name} is ready for disaggregated prefill"),
-        serde_json::json!({ "name": name, "state": entry.state }),
+        &format!("{name} is enrolled — start inference with `muser up`"),
+        serde_json::json!({
+            "name": name,
+            "state": entry.state,
+            "next_command": "muser up",
+        }),
     );
     Ok(())
+}
+
+/// Every resident producer owns the same host TCP port. Registering one
+/// physical GX10 twice under two aliases would create two apparently healthy
+/// topology rows whose deploy/restart operations fight over port 29591 and
+/// whose last enrollment wins. Resolve OpenSSH aliases and refuse that shape
+/// before any remote mutation.
+fn reject_duplicate_control_endpoint(
+    registry: &mut Registry,
+    name: &str,
+    user: &str,
+    host: &str,
+    repair: bool,
+) -> Result<Vec<String>> {
+    let requested = Ssh::new(user, host, None)?.effective_host();
+    let duplicates = registry
+        .nodes
+        .iter()
+        .filter(|entry| {
+            if entry.name == name {
+                return false;
+            }
+            let registered = entry.connect_host.clone().unwrap_or_else(|| {
+                Ssh::new(
+                    &entry.user,
+                    &entry.host,
+                    entry.key_path.as_deref().map(Path::new),
+                )
+                .map(|ssh| ssh.effective_host())
+                .unwrap_or_else(|_| entry.host.clone())
+            });
+            same_control_endpoint(&requested, &registered)
+        })
+        .map(|entry| {
+            (
+                entry.name.clone(),
+                entry.state.clone(),
+                entry.user.clone(),
+                entry.host.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let protected = duplicates
+        .iter()
+        .find(|(_, state, _, _)| state == registry::STATE_HEALTHY);
+    if let Some((duplicate_name, _, duplicate_user, duplicate_host)) = protected {
+        return Err(format!(
+            "{} resolves to the producer endpoint already registered as {}; one GX10 owns one control listener on port {DAEMON_PORT} — re-add it as `muser node add {}@{} --name {}` instead of creating a duplicate",
+            host, duplicate_name, duplicate_user, duplicate_host, duplicate_name
+        ));
+    }
+    if !repair {
+        let stale = duplicates
+            .iter()
+            .map(|(duplicate_name, state, _, _)| format!("{duplicate_name} ({state})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "{host} resolves to stale registration {stale}; rerun this exact command with --repair to retire the stale registry row before activating {name}"
+        ));
+    }
+
+    let retired = duplicates
+        .into_iter()
+        .map(|(duplicate_name, _, _, _)| duplicate_name)
+        .collect::<Vec<_>>();
+    registry
+        .nodes
+        .retain(|entry| !retired.iter().any(|name| name == &entry.name));
+    Ok(retired)
+}
+
+fn same_control_endpoint(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    let Ok(left) = (left, DAEMON_PORT).to_socket_addrs() else {
+        return false;
+    };
+    let Ok(right) = (right, DAEMON_PORT).to_socket_addrs() else {
+        return false;
+    };
+    let left = left.map(|address| address.ip()).collect::<Vec<_>>();
+    right
+        .map(|address| address.ip())
+        .any(|address| left.contains(&address))
+}
+
+/// A repeated Add Node is a health operation when the exact deployed state
+/// still matches this build. It must not rotate credentials or restart a
+/// warm 128K producer merely because the operator opened the wizard twice.
+/// A real authenticated handoff is still required before success is shown.
+fn fast_rejoin_eligible(ctx: &Ctx, entry: &NodeEntry, topology_changed: bool) -> Result<bool> {
+    if topology_changed
+        || entry.producer_kind() != ProducerKind::Native
+        || entry.enrollment_version != 2
+        || entry.hmac_epoch <= 0
+        || entry.hmac_key_id.is_empty()
+        || !(entry.state == STATE_HEALTHY
+            || entry
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with(REJOIN_ERROR_PREFIX)))
+        || !enroll::cluster_config(&ctx.muser_home, &entry.name).is_file()
+    {
+        return Ok(false);
+    }
+    let identity = ctx.native_identity()?;
+    if entry.container_image.as_deref() != Some(identity.image_id.as_str()) {
+        return Ok(false);
+    }
+    let consumer = ctx.model_dir()?.join(&identity.consumer.filename);
+    let consumer = match consumer.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Ok(false),
+    };
+    if entry.consumer_model_path.as_deref() != Some(consumer.to_string_lossy().as_ref()) {
+        return Ok(false);
+    }
+    let runtime_sha256 = deploy::runtime_sha256(&ctx.repo_root, entry.producer_kind())?;
+    Ok(entry.runtime_sha256.as_deref() == Some(runtime_sha256.as_str()))
+}
+
+/// Returns `true` when the live proof completed (or was planned by a dry
+/// run), `false` when the producer is offline and the normal repair pipeline
+/// should continue. A listening-but-invalid endpoint fails closed and needs
+/// an explicit `--repair`; silently rotating a live node on any probe error
+/// would turn local GPU contention or a bad endpoint into remote mutation.
+fn fast_rejoin(
+    ctx: &Ctx,
+    registry: &mut Registry,
+    entry: &mut NodeEntry,
+    target: &str,
+) -> Result<bool> {
+    ctx.progress.emit(
+        Step::Preflight,
+        Status::Start,
+        "checking the existing native producer before changing it",
+    );
+    if ctx.dry_run {
+        ctx.progress.plan(
+            Step::Deploy,
+            "keep the matching image and control runtime in place",
+        );
+        ctx.progress
+            .plan(Step::Model, "reuse the enrolled NVFP4 artifacts");
+        ctx.progress
+            .plan(Step::Enroll, "keep the active enrollment and keys");
+        ctx.progress
+            .plan(Step::Daemon, "keep the resident producer warm");
+        smoke::run(ctx, entry)?;
+        ctx.progress.plan(
+            Step::Smoke,
+            &format!(
+                "finish the rejoin plan for {}; state remains unchanged",
+                entry.name
+            ),
+        );
+        return Ok(true);
+    }
+
+    let ssh = ctx.ssh(entry)?;
+    if let Err(error) = ssh.tcp_probe(DAEMON_PORT, REJOIN_PROBE_TIMEOUT) {
+        ctx.progress.emit(
+            Step::Daemon,
+            Status::Info,
+            &format!(
+                "the registered producer is offline ({error}); continuing with the repair pipeline"
+            ),
+        );
+        return Ok(false);
+    }
+
+    ctx.progress.emit(
+        Step::Preflight,
+        Status::Ok,
+        "registered target and enrollment match this release",
+    );
+    ctx.progress.emit(
+        Step::Deploy,
+        Status::Ok,
+        "image and staged control-runtime digest match; copied nothing",
+    );
+    ctx.progress.emit(
+        Step::Model,
+        Status::Ok,
+        "using the enrolled NVFP4 artifacts for the live handoff",
+    );
+    ctx.progress.emit(
+        Step::Enroll,
+        Status::Ok,
+        "enrollment v2 is active; kept the existing credentials",
+    );
+    ctx.progress.emit(
+        Step::Daemon,
+        Status::Ok,
+        "resident producer is listening; kept it warm",
+    );
+
+    // Older builds recorded the identity manifest inside their checkout or
+    // installer. Migrate it before saving this otherwise no-op rejoin, while
+    // the current bundle is present and its compiled roots have validated it.
+    deploy::persist_current_receipt(ctx, entry)?;
+
+    if let Err(error) = smoke::run(ctx, entry) {
+        let detail = format!(
+            "{error}; the listening producer was left unchanged — rerun `muser node add {target} --name {} --repair` only if you intend to redeploy, rotate enrollment, and restart it",
+            entry.name
+        );
+        ctx.progress.emit(Step::Smoke, Status::Fail, &detail);
+        entry.touch(failure_state(&error));
+        entry.last_error = Some(format!("{REJOIN_ERROR_PREFIX}{}", record_error(&error)));
+        persist(ctx, registry, entry)?;
+        return Err(detail);
+    }
+
+    entry.touch(STATE_HEALTHY);
+    entry.last_error = None;
+    persist(ctx, registry, entry)?;
+    ctx.progress.emit_data(
+        Step::Smoke,
+        Status::Ok,
+        &format!(
+            "{} is enrolled; live handoff passed without restarting the producer — start inference with `muser up`",
+            entry.name
+        ),
+        serde_json::json!({
+            "name": entry.name,
+            "state": entry.state,
+            "reused_warm_producer": true,
+            "next_command": "muser up",
+        }),
+    );
+    Ok(true)
 }
 
 /// One step, against a node the registry already knows.
@@ -279,13 +606,22 @@ fn single(
     step: Step,
     run_step: fn(&Ctx, &mut NodeEntry) -> Result<()>,
 ) -> Result<()> {
-    let ctx = Ctx::new(&args.common)?;
+    let mut ctx = Ctx::new(&args.common)?;
     ssh::validate_name(&args.name)?;
+    let _operation_lock = if ctx.dry_run {
+        None
+    } else {
+        Some(OperationLock::acquire(
+            &ctx.muser_home,
+            &format!("running node step for {}", args.name),
+        )?)
+    };
     let mut registry = Registry::load(&ctx.muser_home)?;
     let mut entry = registry
         .get(&args.name)
         .cloned()
         .ok_or_else(|| format!("no node named {} — run `muser node add` first", args.name))?;
+    inherit_recorded_model_dir(&mut ctx, &entry);
     if let Some(lane) = &ctx.lane_dir_override {
         ssh::validate_remote_path(lane)?;
         entry.lane_dir = lane.clone();
@@ -301,8 +637,15 @@ fn single(
                 ctx.progress.emit_data(
                     Step::Smoke,
                     Status::Ok,
-                    &format!("{} is ready for disaggregated prefill", entry.name),
-                    serde_json::json!({ "name": entry.name, "state": entry.state }),
+                    &format!(
+                        "{} is enrolled — start inference with `muser up`",
+                        entry.name
+                    ),
+                    serde_json::json!({
+                        "name": entry.name,
+                        "state": entry.state,
+                        "next_command": "muser up",
+                    }),
                 );
             }
             Ok(())
@@ -313,6 +656,17 @@ fn single(
             persist(&ctx, &mut registry, &entry)?;
             Err(error)
         }
+    }
+}
+
+fn inherit_recorded_model_dir(ctx: &mut Ctx, entry: &NodeEntry) {
+    if ctx.model_dir_override.is_none() {
+        ctx.model_dir_override = entry
+            .consumer_model_path
+            .as_deref()
+            .map(Path::new)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
     }
 }
 
@@ -334,6 +688,145 @@ pub fn muser_home() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".muser"))
 }
 
+/// Fully resolved local half of one enrolled native topology. This is the
+/// bridge between the onboarding registry and `muser up`: users name
+/// the node once instead of copying model, TLS, HMAC, and cluster paths out
+/// of progress logs.
+pub(crate) struct ServingTarget {
+    pub name: String,
+    pub model_path: PathBuf,
+    pub model_sha256: String,
+    pub model_validation_current: bool,
+    pub cluster_config: PathBuf,
+}
+
+pub(crate) fn serving_target(name: &str) -> Result<ServingTarget> {
+    ssh::validate_name(name)?;
+    let home = muser_home()?;
+    let registry = Registry::load(&home)?;
+    let entry = registry
+        .get(name)
+        .ok_or_else(|| format!("no node named {name} — run `muser node add user@host` first"))?;
+    if entry.producer_kind() != ProducerKind::Native {
+        return Err(format!(
+            "node {name} uses the kquant research lane; `muser up` ships the native NVFP4 lane"
+        ));
+    }
+    if entry.state != registry::STATE_HEALTHY || entry.enrollment_version != 2 {
+        return Err(format!(
+            "node {name} is {} rather than healthy enrollment v2 — rerun `muser node add {}@{} --name {name}`",
+            entry.state, entry.user, entry.host
+        ));
+    }
+
+    let root = repo_root()?;
+    let identity = NativeIdentity::load(&root)?;
+    if entry.container_image.as_deref() != Some(identity.image_id.as_str()) {
+        return Err(format!(
+            "node {name} is not deployed with this release's native image — rerun `muser node add {}@{} --name {name}`",
+            entry.user, entry.host
+        ));
+    }
+    let expected_runtime = deploy::runtime_sha256(&root, ProducerKind::Native)?;
+    if entry.runtime_sha256.as_deref() != Some(expected_runtime.as_str()) {
+        return Err(format!(
+            "node {name}'s staged runtime is older than this build — rerun `muser node add {}@{} --name {name}`",
+            entry.user, entry.host
+        ));
+    }
+
+    let recorded_model = entry.consumer_model_path.as_deref().ok_or_else(|| {
+        format!(
+            "node {name} predates automatic decoder selection — rerun `muser node add {}@{} --name {name}` once",
+            entry.user, entry.host
+        )
+    })?;
+    let model_path = PathBuf::from(recorded_model)
+        .canonicalize()
+        .map_err(|error| format!("resolve node {name} decoder {recorded_model}: {error}"))?;
+    if model_path.file_name().and_then(|value| value.to_str())
+        != Some(identity.consumer.filename.as_str())
+    {
+        return Err(format!(
+            "node {name}'s recorded decoder is not the enrolled native artifact"
+        ));
+    }
+    let current_validation =
+        model::consumer_validation_stamp(&model_path, &identity.consumer.sha256).ok();
+    let model_validation_current =
+        entry.consumer_validation.as_deref() == current_validation.as_deref();
+    let cluster_config = enroll::cluster_config(&home, name);
+    if !cluster_config.is_file() {
+        return Err(format!(
+            "node {name}'s receiver configuration is missing — rerun `muser node add {}@{} --name {name}`",
+            entry.user, entry.host
+        ));
+    }
+    Ok(ServingTarget {
+        name: name.to_string(),
+        model_path,
+        model_sha256: identity.consumer.sha256,
+        model_validation_current,
+        cluster_config,
+    })
+}
+
+/// Persist the cheap stat-bound receipt after a compatibility fallback had
+/// to re-hash an artifact written by an older Muser release. New onboarding
+/// records this during the model step, so ordinary `muser up` never enters
+/// this path.
+pub(crate) fn remember_consumer_validation(
+    name: &str,
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<()> {
+    let home = muser_home()?;
+    let mut registry = Registry::load(&home)?;
+    let entry = registry
+        .nodes
+        .iter_mut()
+        .find(|entry| entry.name == name)
+        .ok_or_else(|| format!("no node named {name}"))?;
+    let recorded = entry
+        .consumer_model_path
+        .as_deref()
+        .ok_or_else(|| format!("node {name} has no recorded consumer"))?;
+    let recorded = PathBuf::from(recorded)
+        .canonicalize()
+        .map_err(|error| format!("resolve node {name} consumer: {error}"))?;
+    if recorded != path {
+        return Err(format!("node {name} consumer changed during validation"));
+    }
+    entry.consumer_validation = Some(model::consumer_validation_stamp(path, expected_sha256)?);
+    registry.save(&home)
+}
+
+/// Pick the most recently updated release-compatible native enrollment for
+/// bare `muser up`. The shipped topology is single-producer today, so the
+/// newest healthy entry is the least surprising recovery target after a
+/// repair or re-enrollment. Stale/incomplete entries are skipped and remain
+/// visible in the dashboard for repair.
+pub(crate) fn default_serving_node() -> Result<Option<String>> {
+    let home = muser_home()?;
+    let registry = Registry::load(&home)?;
+    let mut candidates = registry
+        .nodes
+        .into_iter()
+        .filter(|entry| {
+            entry.producer_kind() == ProducerKind::Native
+                && entry.state == STATE_HEALTHY
+                && entry.enrollment_version == 2
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.updated.cmp(&left.updated));
+    for entry in candidates {
+        if serving_target(&entry.name).is_ok() {
+            return Ok(Some(entry.name));
+        }
+    }
+    Ok(None)
+}
+
 /// The repository this binary's scripts and pins live in. `muser up` runs
 /// from a clone, so the working directory is the first place to look.
 fn repo_root() -> Result<PathBuf> {
@@ -341,10 +834,18 @@ fn repo_root() -> Result<PathBuf> {
         return Ok(PathBuf::from(explicit));
     }
     let marker = Path::new("docs/release-artifacts.json");
-    let candidates = std::env::current_dir()
-        .ok()
-        .into_iter()
-        .chain(std::env::current_exe().ok());
+    let mut candidates = Vec::new();
+    if let Ok(directory) = std::env::current_dir() {
+        candidates.push(directory);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        candidates.push(executable.clone());
+        if let Ok(canonical) = executable.canonicalize() {
+            if canonical != executable {
+                candidates.push(canonical);
+            }
+        }
+    }
     for candidate in candidates {
         for ancestor in candidate.ancestors() {
             if ancestor.join(marker).is_file() {
@@ -369,10 +870,73 @@ fn default_name(host: &str) -> String {
 mod tests {
     use super::*;
 
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
     #[test]
     fn the_default_name_is_the_hosts_first_label() {
         assert_eq!(default_name("gx10.lab.local"), "gx10");
         assert_eq!(default_name("gx10"), "gx10");
+    }
+
+    #[test]
+    fn duplicate_control_endpoints_are_detected_after_resolution() {
+        assert!(same_control_endpoint("127.0.0.1", "127.0.0.1"));
+        assert!(same_control_endpoint("LOCALHOST", "localhost"));
+        assert!(!same_control_endpoint("127.0.0.1", "127.0.0.2"));
+    }
+
+    #[test]
+    fn explicit_repair_retires_only_stale_duplicate_rows() {
+        let mut stale =
+            NodeEntry::draft("old", "muser", "old-alias", Path::new("/tmp/muser"), None);
+        stale.connect_host = Some("127.0.0.1".into());
+        stale.touch(registry::STATE_ERROR);
+        let mut registry = Registry { nodes: vec![stale] };
+
+        let error = reject_duplicate_control_endpoint(
+            &mut registry,
+            "current",
+            "muser",
+            "127.0.0.1",
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("--repair"));
+        assert_eq!(registry.nodes.len(), 1);
+
+        let retired =
+            reject_duplicate_control_endpoint(&mut registry, "current", "muser", "127.0.0.1", true)
+                .unwrap();
+        assert_eq!(retired, vec!["old"]);
+        assert!(registry.nodes.is_empty());
+    }
+
+    #[test]
+    fn repair_never_retires_a_healthy_duplicate_row() {
+        let mut healthy = NodeEntry::draft(
+            "active",
+            "muser",
+            "active-alias",
+            Path::new("/tmp/muser"),
+            None,
+        );
+        healthy.connect_host = Some("127.0.0.1".into());
+        healthy.touch(registry::STATE_HEALTHY);
+        let mut registry = Registry {
+            nodes: vec![healthy],
+        };
+
+        let error =
+            reject_duplicate_control_endpoint(&mut registry, "other", "muser", "127.0.0.1", true)
+                .unwrap_err();
+        assert!(error.contains("already registered as active"));
+        assert_eq!(registry.nodes.len(), 1);
     }
 
     #[test]
@@ -398,6 +962,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_existing_node_reuses_its_recorded_model_volume() {
+        let mut ctx = test_ctx();
+        let mut entry = NodeEntry::draft("gx10", "muser", "gx10.local", Path::new("/tmp"), None);
+        entry.consumer_model_path = Some("/Volumes/models/native.gguf".into());
+        inherit_recorded_model_dir(&mut ctx, &entry);
+        assert_eq!(
+            ctx.model_dir_override.as_deref(),
+            Some(Path::new("/Volumes/models"))
+        );
+
+        ctx.model_dir_override = Some(PathBuf::from("/explicit"));
+        inherit_recorded_model_dir(&mut ctx, &entry);
+        assert_eq!(
+            ctx.model_dir_override.as_deref(),
+            Some(Path::new("/explicit"))
+        );
+    }
+
+    #[test]
+    fn fast_rejoin_requires_the_exact_runtime_and_active_enrollment() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home =
+            std::env::temp_dir().join(format!("muser-fast-rejoin-{}-{unique}", std::process::id()));
+        let cluster = enroll::cluster_config(&home, "gx10");
+        std::fs::create_dir_all(cluster.parent().unwrap()).unwrap();
+        std::fs::write(&cluster, b"{}\n").unwrap();
+
+        let mut ctx = test_ctx();
+        ctx.muser_home = home.clone();
+        ctx.repo_root = workspace_root();
+        ctx.model_dir_override = Some(home.join("models"));
+        let identity = ctx.native_identity().unwrap();
+        let runtime = deploy::runtime_sha256(&ctx.repo_root, ProducerKind::Native).unwrap();
+        let consumer = ctx.model_dir().unwrap().join(&identity.consumer.filename);
+        std::fs::create_dir_all(consumer.parent().unwrap()).unwrap();
+        std::fs::write(&consumer, b"test-only").unwrap();
+        let mut entry = NodeEntry::draft("gx10", "muser", "gx10.local", &home, None);
+        entry.state = STATE_HEALTHY.into();
+        entry.container_image = Some(identity.image_id);
+        entry.runtime_sha256 = Some(runtime);
+        entry.consumer_model_path = Some(consumer.canonicalize().unwrap().display().to_string());
+        entry.enrollment_version = 2;
+        entry.hmac_epoch = 1;
+        entry.hmac_key_id = "muser-gx10-e1".into();
+
+        assert!(fast_rejoin_eligible(&ctx, &entry, false).unwrap());
+        assert!(!fast_rejoin_eligible(&ctx, &entry, true).unwrap());
+        entry.runtime_sha256 = Some("0".repeat(64));
+        assert!(!fast_rejoin_eligible(&ctx, &entry, false).unwrap());
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     fn test_ctx() -> Ctx {
         Ctx {
             progress: Progress::new(true),
@@ -411,6 +1032,7 @@ mod tests {
             model_source_base: None,
             prompt_fixture: None,
             lane_dir_override: None,
+            verified_native_consumer: Mutex::new(None),
         }
     }
 }

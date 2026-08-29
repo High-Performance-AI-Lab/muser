@@ -52,6 +52,7 @@ futures-util = { version = "=0.3.34", default-features = false, features = ["asy
 sha2 = "0.10"                                                # checksum verification
 toml = "0.8"                                                 # optional `muser.toml` config file
 ctrlc = "3"                                                  # graceful "shutting down" message on Ctrl+C
+libc = "0.2"                                                  # advisory topology-operation lock on macOS/Linux
 
 # Axum/Hyper validates HTTP framing and Tokio owns bounded connection and
 # body concurrency. Native TLS is provided by rustls through axum-server.

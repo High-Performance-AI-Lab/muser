@@ -522,7 +522,7 @@ pub fn build_snapshot(state: &ServerState) -> MetricsSnapshot {
 
     let requests_per_s = state.requests_per_s();
 
-    let model_bytes = state.model_bytes;
+    let model_bytes = state.model_bytes();
     // Node labels come from the live receiver configuration; with no remote
     // route configured there is nothing to name and no transfer to label.
     let (src_node, dst_node) = state

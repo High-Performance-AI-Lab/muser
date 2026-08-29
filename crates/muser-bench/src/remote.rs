@@ -3,9 +3,11 @@
 //! Live GX10 -> Metal disaggregated-prefill qualification.
 //!
 //! This executable deliberately uses the same `RemoteReceiver` as serving.
-//! Every sample performs cold local recomputation and an authenticated remote
-//! install, compares 256 greedy tokens plus every full target-logit row, and
-//! retains producer/transport phase times needed to prove real overlap.
+//! Qualification samples perform cold local recomputation and an authenticated
+//! remote install, compare 256 greedy tokens plus every full target-logit row,
+//! and retain producer/transport phase times needed to prove real overlap. The
+//! explicitly selected operational probe is smaller: one authenticated install
+//! plus bounded decode, with no claim of per-machine reference qualification.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -64,6 +66,7 @@ struct Args {
     p4: bool,
     diagnostic: bool,
     onboarding_native: bool,
+    operational_probe: bool,
     drift_graded: bool,
     reference_once: bool,
     performance_only: bool,
@@ -302,6 +305,30 @@ struct FastPerformanceSample<'a> {
     receiver_segment_read_offsets_ns: Vec<u64>,
 }
 
+#[derive(Serialize)]
+struct OperationalProbeSample<'a> {
+    schema: &'static str,
+    kind: &'static str,
+    identity: &'a str,
+    variant: Variant,
+    prompt_positions: usize,
+    output_tokens: usize,
+    remote_ttft_ns: u64,
+    remote_first_64_decode_ns: u64,
+    installed_bytes: u64,
+    installed_segments: u32,
+    receiver_transfer_commit_ns: u64,
+    receiver_segment_drain_ns: u64,
+    active_drain_gbps: f64,
+    producer_payload_wire_ns: u64,
+    producer_payload_gbps: f64,
+    generated_tokens_sha256: String,
+    authenticated_handoff: bool,
+    target_installed: bool,
+    reference_comparison: Option<bool>,
+    seal_eligible: bool,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -341,6 +368,7 @@ fn run() -> Result<(), String> {
                 "p4": args.p4,
                 "diagnostic": args.diagnostic,
                 "onboarding_native": args.onboarding_native,
+                "operational_probe": args.operational_probe,
                 "drift_graded": args.drift_graded,
                 "reference_once": args.reference_once,
                 "performance_only": args.performance_only,
@@ -353,7 +381,9 @@ fn run() -> Result<(), String> {
                 "external_producer_receipt": args.external_producer_receipt,
                 "external_producer_receipt_dir": args.external_producer_receipt_dir,
                 "local_only": args.local_only,
-                "correctness": if args.performance_only {
+                "correctness": if args.operational_probe {
+                    "authenticated target-KV install plus bounded decode; no local reference comparison"
+                } else if args.performance_only {
                     "fast-output-determinism; exact-reference comparison is separate evidence"
                 } else if args.drift_graded {
                     "distributional-token-logit-and-kv-plane-drift"
@@ -460,6 +490,9 @@ fn run() -> Result<(), String> {
     let receiver = RemoteReceiver::bind(config)?;
     if let Some(cut) = args.delta_prefix_cut {
         return run_delta_probe(&args, &model, &prepared, max_context, &receiver, cut);
+    }
+    if args.operational_probe {
+        return run_operational_probe(&args, &model, &prepared, max_context, &receiver);
     }
     if args.performance_only {
         let mut assistant = match args.dflash.as_deref() {
@@ -1334,6 +1367,105 @@ fn run_fast_performance_only(
             "seal_eligible": false,
             "reason": "performance-only packet; drift is bound by a separate exact-reference cell",
         })
+    );
+    Ok(())
+}
+
+/// A setup-time proof that the installed topology can perform the production
+/// operation: drive the enrolled producer, authenticate and atomically install
+/// its target KV, then decode a small bounded continuation on Metal. This is
+/// intentionally not a local-vs-remote qualification cell; the full command
+/// remains available for evidence and performance work.
+fn run_operational_probe(
+    args: &Args,
+    model: &Model,
+    prepared: &PreparedPrompt,
+    max_context: usize,
+    receiver: &RemoteReceiver,
+) -> Result<(), String> {
+    let (generation, remote_ttft_ns, receipt) = run_remote_target(
+        receiver,
+        None,
+        model,
+        prepared,
+        max_context,
+        args.output_tokens,
+        false,
+        false,
+    )?;
+    if generation.tokens.len() != args.output_tokens {
+        return Err(format!(
+            "operational probe decoded {} tokens, expected {}",
+            generation.tokens.len(),
+            args.output_tokens
+        ));
+    }
+    if receipt.transfer_id.is_empty()
+        || receipt.generation == 0
+        || receipt.installed_segments == 0
+        || receipt.installed_bytes == 0
+        || !receipt.components.target_prepared
+        || !receipt.components.target_installed
+        || receipt.components.target_segments == 0
+        || receipt.components.target_bytes != receipt.installed_bytes
+        || receipt.components.dflash_prepared
+        || receipt.components.dflash_installed
+        || receipt.components.dflash_segments != 0
+        || receipt.components.dflash_bytes != 0
+    {
+        return Err("operational probe receipt does not prove one target-only install".into());
+    }
+    let drain_ns = receipt.phases.segment_read_ns;
+    if drain_ns == 0 {
+        return Err("operational probe recorded no active segment-drain time".into());
+    }
+    let active_drain_gbps = receipt.installed_bytes as f64 * 8.0 / drain_ns as f64;
+    let (producer_payload_wire_ns, producer_payload_gbps) = match receipt.producer.as_ref() {
+        Some(producer)
+            if producer.payload_bytes == receipt.installed_bytes
+                && producer.payload_wire_ns > 0 =>
+        {
+            (
+                producer.payload_wire_ns,
+                receipt.installed_bytes as f64 * 8.0 / producer.payload_wire_ns as f64,
+            )
+        }
+        Some(_) => {
+            return Err(
+                "operational probe producer receipt does not bind the installed payload".into(),
+            )
+        }
+        None => {
+            return Err(
+                "operational probe omits the authenticated producer payload timing receipt".into(),
+            )
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&OperationalProbeSample {
+            schema: "muser.remote-qualify.v1",
+            kind: "operational-probe",
+            identity: &args.identity,
+            variant: args.variant,
+            prompt_positions: prepared.witnesses.len(),
+            output_tokens: args.output_tokens,
+            remote_ttft_ns,
+            remote_first_64_decode_ns: generation.first_64_decode_ns,
+            installed_bytes: receipt.installed_bytes,
+            installed_segments: receipt.installed_segments,
+            receiver_transfer_commit_ns: receipt.transfer_commit_ns,
+            receiver_segment_drain_ns: drain_ns,
+            active_drain_gbps,
+            producer_payload_wire_ns,
+            producer_payload_gbps,
+            generated_tokens_sha256: token_digest(&generation.tokens),
+            authenticated_handoff: true,
+            target_installed: true,
+            reference_comparison: None,
+            seal_eligible: false,
+        })
+        .map_err(|error| error.to_string())?
     );
     Ok(())
 }
@@ -2944,10 +3076,12 @@ fn validate_args(args: &Args) -> Result<(), String> {
         + usize::from(args.p4)
         + usize::from(args.diagnostic)
         + usize::from(args.onboarding_native)
+        + usize::from(args.operational_probe)
         > 1
     {
         return Err(
-            "--poc, --p4, --diagnostic, and --onboarding-native are mutually exclusive".into(),
+            "--poc, --p4, --diagnostic, --onboarding-native, and --operational-probe are mutually exclusive"
+                .into(),
         );
     }
     if args.local_only && (!args.diagnostic || args.variant != Variant::Text) {
@@ -2980,6 +3114,22 @@ fn validate_args(args: &Args) -> Result<(), String> {
     {
         return Err(
             "--onboarding-native requires --drift-graded --reference-once --variant text and no alternate receipt/performance mode"
+                .into(),
+        );
+    }
+    if args.operational_probe
+        && (args.variant != Variant::Text
+            || args.drift_graded
+            || args.reference_once
+            || args.performance_only
+            || args.fast_consumer_math
+            || args.external_producer_receipt.is_some()
+            || args.external_producer_receipt_dir.is_some()
+            || args.delta_prefix_cut.is_some()
+            || args.local_only)
+    {
+        return Err(
+            "--operational-probe requires the strict text route with no qualification or performance modifiers"
                 .into(),
         );
     }
@@ -3047,7 +3197,13 @@ fn validate_args(args: &Args) -> Result<(), String> {
     {
         return Err("--fast-consumer-math requires MUSER_CROSS_VENDOR_QK to be unset".into());
     }
-    if args.onboarding_native {
+    if args.operational_probe {
+        if args.repetitions != 1 || !(1..=16).contains(&args.output_tokens) {
+            return Err(
+                "operational probe requires one repetition and 1..=16 output tokens".into(),
+            );
+        }
+    } else if args.onboarding_native {
         if args.repetitions != 3 || args.output_tokens != 256 {
             return Err(
                 "native onboarding requires exactly 3 repetitions and 256 output tokens".into(),
@@ -3128,6 +3284,7 @@ fn parse_args() -> Result<Args, String> {
     let mut p4 = false;
     let mut diagnostic = false;
     let mut onboarding_native = false;
+    let mut operational_probe = false;
     let mut drift_graded = false;
     let mut reference_once = false;
     let mut performance_only = false;
@@ -3172,6 +3329,7 @@ fn parse_args() -> Result<Args, String> {
             "--p4" => p4 = true,
             "--diagnostic" => diagnostic = true,
             "--onboarding-native" => onboarding_native = true,
+            "--operational-probe" => operational_probe = true,
             "--drift-graded" => drift_graded = true,
             "--reference-once" => reference_once = true,
             "--performance-only" => performance_only = true,
@@ -3213,6 +3371,7 @@ fn parse_args() -> Result<Args, String> {
         p4,
         diagnostic,
         onboarding_native,
+        operational_probe,
         drift_graded,
         reference_once,
         performance_only,

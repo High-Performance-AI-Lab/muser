@@ -100,6 +100,7 @@ class NativePrefilldTests(unittest.TestCase):
             "container_image": "sha256:" + SHA,
             "container_name": "muser-native-fixture",
             "runtime_identity": str(identity_path),
+            "runtime_sha256": native.deployed_runtime_sha256(),
             "checkpoint_dir": str(checkpoint),
             "timeout_seconds": 900,
             "max_context": 131072,
@@ -142,6 +143,14 @@ class NativePrefilldTests(unittest.TestCase):
         identity["rope_cache"]["schema"] = "muser.vllm-rope-cache.v1"
         identity_path.write_text(json.dumps(identity), encoding="utf-8")
         with self.assertRaisesRegex(native.NativePrefilldError, "RoPE cache identity"):
+            native.load_config(path)
+
+    def test_staged_runtime_must_match_the_enrollment_digest(self) -> None:
+        path, _ = self.fixture()
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["runtime_sha256"] = "b" * 64
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(native.NativePrefilldError, "staged native runtime"):
             native.load_config(path)
 
     def test_checkpoint_manifest_is_hashed_file_by_file_and_as_an_aggregate(self) -> None:
@@ -225,6 +234,46 @@ class NativePrefilldTests(unittest.TestCase):
         self.assertEqual(value["connector"]["hmac_key_file"], "/run/muser/pki/hmac.key")
         self.assertNotIn("hmac_key", value["connector"])
 
+    def test_container_uses_staged_runtime_and_profiles_only_the_8k_chunk(self) -> None:
+        path, _ = self.fixture()
+        config = native.load_config(path)
+        calls: list[tuple[str, ...]] = []
+
+        def fake_docker(_config, *args, check=True):
+            del check
+            calls.append(tuple(args))
+            stdout = config["container_image"] + "\n" if args[:2] == ("image", "inspect") else ""
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        with (
+            mock.patch.object(native, "docker", side_effect=fake_docker),
+            mock.patch.object(native, "NODE_GPU_LOCK", str(self.root / "gpu.lock")),
+            mock.patch.object(native.time, "monotonic", side_effect=[0.0, 901.0]),
+        ):
+            with self.assertRaisesRegex(native.NativePrefilldError, "did not become ready"):
+                native.start_container(config)
+
+        run = next(arguments for arguments in calls if arguments[:2] == ("run", "-d"))
+        batch_index = run.index("--max-num-batched-tokens")
+        context_index = run.index("--max-model-len")
+        self.assertEqual(run[batch_index + 1], "8192")
+        self.assertEqual(run[context_index + 1], "131072")
+        for source, target in native.runtime_overlay_mounts():
+            self.assertIn(f"{source}:{target}:ro", run)
+
+    def test_runtime_overlay_refuses_symlinks(self) -> None:
+        source = self.root / "real.py"
+        source.write_text("pass\n", encoding="utf-8")
+        link = self.root / "link.py"
+        link.symlink_to(source)
+        with mock.patch.object(
+            native,
+            "CONTAINER_OVERLAY_MOUNTS",
+            ((link, "/opt/muser/link.py"),),
+        ):
+            with self.assertRaisesRegex(native.NativePrefilldError, "not a regular"):
+                native.runtime_overlay_mounts()
+
     def test_receiver_loss_cancels_the_request_and_retains_the_warm_resident(self) -> None:
         process = mock.Mock()
         process.communicate.side_effect = [
@@ -295,6 +344,35 @@ class NativePrefilldTests(unittest.TestCase):
                 )
         recover.assert_called_once_with(
             {"timeout_seconds": 900}, "warm request cancellation did not reach idle"
+        )
+
+    def test_failed_request_client_must_prove_idle_before_next_control(self) -> None:
+        config = {
+            "producer_socket": self.root / "producer.sock",
+            "timeout_seconds": 900,
+        }
+        with (
+            mock.patch.object(native, "container_running", return_value=True),
+            mock.patch.object(native, "cancel_inner_request", return_value=True) as cancel,
+            mock.patch.object(native, "recover_container") as recover,
+        ):
+            native.restore_request_slot_after_client_failure(config, "request-10")
+        cancel.assert_called_once_with(config, "request-10")
+        recover.assert_not_called()
+
+    def test_unrecoverable_failed_request_restarts_exact_container(self) -> None:
+        config = {
+            "producer_socket": self.root / "producer.sock",
+            "timeout_seconds": 900,
+        }
+        with (
+            mock.patch.object(native, "container_running", return_value=True),
+            mock.patch.object(native, "cancel_inner_request", return_value=False),
+            mock.patch.object(native, "recover_container") as recover,
+        ):
+            native.restore_request_slot_after_client_failure(config, "request-11")
+        recover.assert_called_once_with(
+            config, "failed native request did not return the warm slot to idle"
         )
 
 

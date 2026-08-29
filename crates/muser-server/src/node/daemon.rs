@@ -1,8 +1,8 @@
 //! Step 5 — the resident producer.
 //!
-//! `bootstrap_node.sh daemon` owns the install (systemd unit where
-//! `systemctl` exists, tmux otherwise); this step hands it the paths from
-//! the enrolment and then believes only the port. A daemon that "started"
+//! `bootstrap_node.sh daemon` owns the supervised systemd install; this step
+//! hands it the paths from the enrolment and then believes only the port. A
+//! daemon that "started"
 //! but never listened has not started.
 
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ bash "$1/bootstrap_node.sh" daemon --lane "$1" --model "$2" --dflash "$3"
 "#;
 
 const DRIVE_NATIVE: &str = r#"set -eu
-bash "$1/bootstrap_node.sh" daemon --native --lane "$1" --checkpoint "$2"
+bash "$1/bootstrap_node.sh" --json daemon --native --lane "$1" --checkpoint "$2"
 "#;
 
 pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
@@ -50,7 +50,7 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     if ctx.dry_run {
         ctx.progress.plan_command(
             Step::Daemon,
-            &format!("install and start the daemon from {lane} (systemd, tmux fallback)"),
+            &format!("install and start the persistent systemd daemon from {lane}"),
             &ssh.argv(&[&lane, &model, &dflash]),
         );
         ctx.progress.plan(
@@ -93,8 +93,8 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
                     serde_json::json!({ "port": DAEMON_PORT, "connect_ms": millis(elapsed) }),
                 );
                 // Listening proves only the enrolled transport is available;
-                // `healthy` remains exclusively owned by the exact three-run
-                // smoke qualification and its durable registry commit.
+                // `healthy` remains owned by a real authenticated handoff,
+                // bounded Metal decode, and the durable registry commit.
                 entry.touch(STATE_ENROLLED);
                 entry.last_error = None;
                 return Ok(());
@@ -110,6 +110,59 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+#[derive(Debug, PartialEq)]
+struct BootstrapProgress {
+    detail: String,
+    data: Option<serde_json::Value>,
+}
+
+fn sanitized_native_startup(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let startup = value.get("data")?.get("native_startup")?;
+    let phase = startup.get("phase")?.as_str()?;
+    let completed = startup.get("completed")?.as_u64()?;
+    let total = startup.get("total")?.as_u64()?;
+    let elapsed_seconds = startup.get("elapsed_seconds")?.as_u64()?;
+    let expected_completed = match phase {
+        "engine-setup" => 0,
+        "weights" => 1,
+        "batch-profile" => 2,
+        "kv-warmup" => 3,
+        "request-warmup" => 4,
+        "ready" => 5,
+        _ => return None,
+    };
+    if completed != expected_completed || total != 5 || elapsed_seconds > TIMEOUT_SECONDS {
+        return None;
+    }
+    // Rebuild the object rather than relaying the remote value. This is the
+    // complete public vocabulary; arbitrary container fields never cross the
+    // SSH boundary into the browser's progress transcript.
+    Some(serde_json::json!({
+        "native_startup": {
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+            "elapsed_seconds": elapsed_seconds,
+        }
+    }))
+}
+
+fn bootstrap_progress(line: &str) -> Option<BootstrapProgress> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if value.get("schema").and_then(serde_json::Value::as_str)
+        != Some(super::progress::PROGRESS_SCHEMA)
+        || value.get("step").and_then(serde_json::Value::as_str) != Some("daemon")
+    {
+        return None;
+    }
+    let detail = value
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)?;
+    let data = sanitized_native_startup(&value);
+    Some(BootstrapProgress { detail, data })
 }
 
 fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
@@ -141,7 +194,17 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         return Ok(());
     }
 
-    let relay = |line: &str| ctx.progress.emit(Step::Daemon, Status::Info, line);
+    let relay = |line: &str| {
+        if let Some(progress) = bootstrap_progress(line) {
+            if let Some(data) = progress.data {
+                ctx.progress
+                    .emit_data(Step::Daemon, Status::Info, &progress.detail, data);
+            } else {
+                ctx.progress
+                    .emit(Step::Daemon, Status::Info, &progress.detail);
+            }
+        }
+    };
     ssh.run_relayed(DRIVE_NATIVE, &[&lane, &checkpoint], &relay)?;
     let deadline = Instant::now() + Duration::from_secs(TIMEOUT_SECONDS);
     let mut last = format!("{}:{DAEMON_PORT} was never probed", entry.host);
@@ -192,4 +255,73 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
 
 pub fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_bootstrap_progress_is_sanitized_without_relaying_arbitrary_output() {
+        let line = serde_json::json!({
+            "schema": super::super::progress::PROGRESS_SCHEMA,
+            "step": "daemon",
+            "status": "info",
+            "detail": "weights loaded; initializing the 8K chunked-prefill scheduler (99s)",
+            "data": {
+                "native_startup": {
+                    "phase": "batch-profile",
+                    "completed": 2,
+                    "total": 5,
+                    "elapsed_seconds": 99,
+                    "remote_only": "must not cross",
+                },
+                "arbitrary": "must not cross",
+            },
+        })
+        .to_string();
+        let progress = bootstrap_progress(&line).expect("sanitized bootstrap event");
+        assert_eq!(
+            progress.detail,
+            "weights loaded; initializing the 8K chunked-prefill scheduler (99s)"
+        );
+        assert_eq!(
+            progress.data,
+            Some(serde_json::json!({
+                "native_startup": {
+                    "phase": "batch-profile",
+                    "completed": 2,
+                    "total": 5,
+                    "elapsed_seconds": 99,
+                }
+            }))
+        );
+        assert!(bootstrap_progress("raw detached-container log").is_none());
+        assert!(bootstrap_progress(
+            r#"{"schema":"muser.node-progress.v2","step":"model","detail":"wrong step"}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn malformed_native_startup_data_is_not_relayed() {
+        let line = serde_json::json!({
+            "schema": super::super::progress::PROGRESS_SCHEMA,
+            "step": "daemon",
+            "status": "info",
+            "detail": "safe milestone text",
+            "data": {
+                "native_startup": {
+                    "phase": "made-up-phase",
+                    "completed": 2,
+                    "total": 5,
+                    "elapsed_seconds": 9,
+                }
+            },
+        })
+        .to_string();
+        let progress = bootstrap_progress(&line).expect("detail remains usable");
+        assert_eq!(progress.detail, "safe milestone text");
+        assert_eq!(progress.data, None);
+    }
 }

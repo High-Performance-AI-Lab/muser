@@ -32,7 +32,7 @@
     "infill",
     "reranking",
     "Responses API",
-    "Anthropic API",
+    "vendor-specific Messages API",
     "built-in tool execution",
     "llama.cpp Web UI",
     "public-CoreML ANE DFlash routing (experimental post-release)"

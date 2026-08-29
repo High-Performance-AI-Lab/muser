@@ -39,6 +39,37 @@ struct GgmlMetalKargsRope {
 }
 
 impl MetalKernels {
+    #[allow(clippy::too_many_arguments)]
+    fn encode_cross_vendor_rope_norm_batch_cached(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        q: &GpuBuffer,
+        k: &GpuBuffer,
+        frequencies: &GpuBuffer,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        token_count: usize,
+        positions: GpuByteView<'_>,
+    ) {
+        debug_assert_eq!(positions.len(), token_count * std::mem::size_of::<u32>());
+        debug_assert!(frequencies.len() >= head_dim);
+        encoder.set_compute_pipeline_state(&self.cross_vendor_rope);
+        encoder.set_buffer(0, Some(q.metal()), 0);
+        encoder.set_buffer(1, Some(k.metal()), 0);
+        encoder.set_buffer(2, Some(frequencies.metal()), 0);
+        encoder.set_buffer(3, Some(positions.metal()), positions.offset() as u64);
+        set_value(encoder, 4, &(n_heads as u32));
+        set_value(encoder, 5, &(n_kv_heads as u32));
+        set_value(encoder, 6, &(head_dim as u32));
+        set_value(encoder, 7, &(token_count as u32));
+        let pairs = (n_heads + n_kv_heads) * (head_dim / 2);
+        encoder.dispatch_thread_groups(
+            MTLSize::new(pairs.div_ceil(32) as u64, token_count as u64, 1),
+            MTLSize::new(32, 1, 1),
+        );
+    }
+
     /// Ferrite a85048a90 NORM-layout cached-frequency RoPE. Muse rotates
     /// adjacent pairs and skips this dispatch entirely on NoPE layers.
     #[allow(clippy::too_many_arguments)]
@@ -66,21 +97,16 @@ impl MetalKernels {
                 return;
             }
             let positions = positions.expect("cross-vendor RoPE requires explicit positions");
-            debug_assert_eq!(positions.len(), token_count * std::mem::size_of::<u32>());
-            debug_assert!(frequencies.len() >= head_dim);
-            encoder.set_compute_pipeline_state(&self.cross_vendor_rope);
-            encoder.set_buffer(0, Some(q.metal()), 0);
-            encoder.set_buffer(1, Some(k.metal()), 0);
-            encoder.set_buffer(2, Some(frequencies.metal()), 0);
-            encoder.set_buffer(3, Some(positions.metal()), positions.offset() as u64);
-            set_value(encoder, 4, &(n_heads as u32));
-            set_value(encoder, 5, &(n_kv_heads as u32));
-            set_value(encoder, 6, &(head_dim as u32));
-            set_value(encoder, 7, &(token_count as u32));
-            let pairs = (n_heads + n_kv_heads) * (head_dim / 2);
-            encoder.dispatch_thread_groups(
-                MTLSize::new(pairs.div_ceil(32) as u64, token_count as u64, 1),
-                MTLSize::new(32, 1, 1),
+            self.encode_cross_vendor_rope_norm_batch_cached(
+                encoder,
+                q,
+                k,
+                frequencies,
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                token_count,
+                positions,
             );
             return;
         }
@@ -197,12 +223,9 @@ mod tests {
         let q = GpuBuffer::from_f32(&context, &q_source).expect("Q buffer");
         let k = GpuBuffer::from_f32(&context, &k_source).expect("K buffer");
 
-        // This exact production selector is process-global; this test is run
-        // by its fully-qualified name as an isolated accelerator cell.
-        unsafe { std::env::set_var("MUSER_CROSS_VENDOR_ROPE_CACHE", "fixture") };
         let command = context.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
-        kernels.encode_rope_norm_batch_cached(
+        kernels.encode_cross_vendor_rope_norm_batch_cached(
             encoder,
             &q,
             &k,
@@ -210,18 +233,14 @@ mod tests {
             Q_HEADS,
             K_HEADS,
             HEAD_DIM,
-            0,
             TOKENS,
-            Some(positions.view(0, positions.len()).expect("positions view")),
-            500_000.0,
-            TOKENS,
+            positions.view(0, positions.len()).expect("positions view"),
         );
         encoder.end_encoding();
         command.commit();
         context
             .wait_for_completion(command, Duration::from_secs(30))
             .expect("canonical RoPE completion");
-        unsafe { std::env::remove_var("MUSER_CROSS_VENDOR_ROPE_CACHE") };
 
         if let Some(output_dir) = std::env::var_os("MUSER_ROPE_FIXTURE_OUTPUT") {
             let output_dir = std::path::PathBuf::from(output_dir);

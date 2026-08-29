@@ -8,6 +8,19 @@ transport.**
 Muser is independent and is not affiliated with, sponsored by, or endorsed by
 Meta or the Muse model authors.
 
+![Muser — inspectable inference across Apple Silicon and a GB10 producer](docs/assets/muser-social-card.png)
+
+## Watch it work
+
+[![Muser onboarding a GX10 producer, handing remote prefill to Metal decode, and reporting measured telemetry](docs/assets/muser-onboarding-and-remote-prefill.png)](docs/assets/muser-onboarding-and-remote-prefill.mp4)
+
+**[▶ Watch the 48-second onboarding and remote-prefill demo](docs/assets/muser-onboarding-and-remote-prefill.mp4)**
+
+This is a real, privacy-masked console capture: one-field node enrollment,
+visible vLLM startup milestones, an authenticated NVFP4 prefill handoff, Metal
+decode, and measured telemetry. Accelerated sections are labeled on screen;
+the final answer and telemetry are shown in real time.
+
 ## The three numbers that matter
 
 All ratios are **llama.cpp ÷ muser** against a source-pinned llama.cpp
@@ -45,8 +58,9 @@ handoff is authenticated TLS + HMAC sustaining ~7 Gbps of installed payload
 at the deepest cell (wired link, EEE off — measured production guidance).
 Bringing a producer online is one command — `muser node add <user@host>` or
 the dashboard's **Add node** — running preflight, pinned deploy, model
-verification, key enrollment, and a three-handoff qualification before a
-node is called healthy:
+verification, key enrollment, and one bounded authenticated handoff before a
+node is called healthy. `muser node qualify <name>` runs the separate
+three-repetition local-reference evidence cell:
 [`docs/disaggregated-prefill.md`](docs/disaggregated-prefill.md),
 [`docs/one-button-onboarding.md`](docs/one-button-onboarding.md).
 
@@ -75,21 +89,40 @@ retained rejection receipts. Full model: [`docs/kvpack.md`](docs/kvpack.md).
 
 ## Quickstart
 
+For the signed Apple Silicon release, verify and open the `.dmg`, then
+double-click **Muser.app**. The signed app opens a visible Terminal and runs the
+same `muser up` flow documented in [`docs/install.md`](docs/install.md).
+
+From a source clone, build the two binaries used by onboarding:
+
 ```sh
 git clone https://github.com/High-Performance-AI-Lab/muser.git && cd muser
-cargo build --release
+cargo build --release --locked -p muser-server --bin muser
+cargo build --release --locked -p muser-bench --bin muser-remote-qualify --features metal
 
-# Shipped topology: enroll one reachable GB10/GX10 producer. This downloads
-# the native Mac NVFP4 artifact, deploys the pinned producer image, provisions
-# mTLS/HMAC, and refuses success until three real handoffs pass.
-./target/release/muser node add user@host
-
-# Start Mac Metal decode with remote NVFP4 prefill.
-MUSER_CROSS_VENDOR_QK=1 ./target/release/muser serve \
-  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
-  --prefill remote \
-  --cluster-config ~/.muser/nodes/host/cluster.json
+# Opens the local dashboard. On a fresh install, choose Add node and enter
+# user@host. The same process becomes the inference server when setup passes;
+# use the Inference tab to send a prompt and watch the handoff live.
+./target/release/muser up
 ```
+
+There is no setup-server restart. **Add node** downloads and verifies the
+native Mac artifact, deploys the pinned GX10 dependency image plus the release
+runtime overlay, provisions mTLS/HMAC, proves a real KV install and Metal
+decode, then starts the Mac decoder on the already-open listener. Subsequent
+bare `muser up` launches select the newest compatible healthy NVFP4 enrollment
+automatically and preserve the supervised producer across Mac restarts.
+`muser node add user@host` is the headless equivalent; `up --node <name>` is
+only needed to choose among multiple enrollments. Full three-repetition
+correctness evidence remains the explicit maintainer command
+`muser node qualify <name>`.
+
+Enrollment copies the validated producer-identity manifest into the node's
+private `~/.muser/nodes/<name>/` state before publishing the registry entry.
+The topology therefore does not retain a dependency on the source checkout,
+an extracted archive, or a mounted installer path. A repeat Add Node also
+migrates older transient receipt paths while preserving a healthy warm
+producer.
 
 First install needs 48 GiB free on the selected Mac model volume. The 19.6 GB
 artifact is split into independently hashed release chunks;
@@ -97,17 +130,43 @@ completed chunks survive a retry, and the assembled file is published only
 after its final SHA-256 matches. The 7 MB source-pinned Metal runtime is also
 resolved automatically. If an anonymous container-registry pull is
 unavailable, deployment falls back to an equally pinned public image archive
-and still requires the exact Docker image ID. The Mac-only `muser up` path
-remains available as the kquant reference lane; kquant+DFlash is research, not
-the default producer.
+and still requires the exact Docker image ID.
+
+After downloads and verification, a genuinely cold producer still loads the
+checkpoint, initializes CUDA/vLLM, allocates KV, and warms the first request.
+The current runtime preserves the 131,072-token contract but initializes an
+8,192-token scheduler shape; the qualified chunked-prefill connector exports
+only the final complete KV state for longer prompts. On the tested GX10, the
+full cold daemon reached ready in **187 seconds**: weights finished at 108
+seconds, KV/kernel warmup began at 115, and first-request warmup began at 153.
+Muser already supplies an explicit KV budget and disables optional JIT/CuteDSL
+warmups. There is no safe vLLM switch that skips the remaining weight load,
+engine initialization, KV allocation, and real warmup while producing a ready
+engine with the same serving contract. Final cold receipts for this runtime
+were **187–206 seconds**: the qualified run reached ready at 187 seconds, the
+clean public-bundle runs at 199 and 206, and the final canonical restore at
+189. The spread is real filesystem/cache variance, not hidden setup work.
+
+The Add Node console presents this as five milestones: engine setup, weight
+loading, 8K chunk initialization, 128K KV allocation, and first-request
+warmup. The active segment remains animated, its elapsed clock keeps moving,
+and Muser emits a sanitized heartbeat every 15 seconds. This is a milestone
+bar rather than a fabricated time percentage. Raw container logs are not sent
+to the browser. Re-adding a matching healthy node keeps the producer warm;
+`--repair` is the explicit redeploy/restart path. The Mac-only kquant research
+lane remains available as `muser up --local`; it is not the shipped default.
 
 Then use any OpenAI-compatible client at `http://127.0.0.1:4949`:
 
 ```sh
 curl http://127.0.0.1:4949/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"hello"}],"max_tokens":64}'
+  -d '{"messages":[{"role":"user","content":"Reply with exactly: Remote prefill is working."}],"max_tokens":256}'
 ```
+
+Muse Glimmer emits reasoning separately from final content. Keep enough output
+budget for both; forcing greedy `temperature: 0` can produce repetitive
+reasoning on this checkpoint.
 
 llama.cpp-compatible (`/completion`, `/slots`, `/props`, …) and Ollama-style
 routes are implemented too; unknown fields are rejected rather than ignored.
@@ -150,10 +209,9 @@ crates/muser-bench/    benchmark executor, route fingerprints, remote qualifier
 - Every performance number above is receipted, not projected: comparator
   cells are exact-token means (five reps unless a cell is marked single-rep);
   the reuse and delta effects are measured packets with retained verdicts.
-  The campaign ledger
-  — including retractions and root-caused divergences — is
-  [`docs/goal-parity-ledger-2026-08.md`](docs/goal-parity-ledger-2026-08.md);
-  public wording is governed by [`docs/launch-claims.md`](docs/launch-claims.md).
+  Public methodology is summarized in
+  [`docs/benchmarks.md`](docs/benchmarks.md), and release wording is governed
+  by [`docs/launch-claims.md`](docs/launch-claims.md).
 - An 8/8 deep-payload soak (130,815-token handoffs, back to back) ran with
   zero producer deaths and deterministic output.
 - Speculative decoding *across the wire* was measured and **rejected** — the
@@ -187,6 +245,7 @@ touching the GPU in this repo's lab runs through
 | [`docs/kvpack.md`](docs/kvpack.md) | The KV handoff format and its security properties |
 | [`docs/muser-architecture.md`](docs/muser-architecture.md) | Engine internals |
 | [`docs/one-button-onboarding.md`](docs/one-button-onboarding.md) | Node onboarding, step by step |
+| [`docs/onboarding-readiness.md`](docs/onboarding-readiness.md) | Onboarding risks, closed behavior, and release evidence |
 | [`docs/telemetry.md`](docs/telemetry.md) | Metrics and the honesty-tagged dashboard |
 
 ## Status and license

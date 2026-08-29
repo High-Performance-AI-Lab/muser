@@ -163,6 +163,7 @@ class EvidenceHomeSafetyTests(unittest.TestCase):
                 out_dir=out_dir,
                 result_receipt=receipt,
                 quiet_seconds=10,
+                operational=False,
                 allow_profiler=False,
                 share_lease=False,
                 command=["/usr/bin/true", "--fixture"],
@@ -248,6 +249,7 @@ class LeaseInheritanceTests(unittest.TestCase):
                 out_dir=out_dir,
                 result_receipt=receipt,
                 quiet_seconds=10,
+                operational=False,
                 allow_profiler=False,
                 share_lease=True,
                 command=["/usr/bin/true", "--fixture"],
@@ -268,6 +270,60 @@ class LeaseInheritanceTests(unittest.TestCase):
             retained = json.loads(receipt.read_text())
             self.assertEqual(retained["lease_source"], "acquired")
             self.assertTrue(retained["lease_shared_with_child"])
+
+
+class QuietPeriodTests(unittest.TestCase):
+    def run_fixture(self, *, operational: bool, quiet_seconds: int) -> dict[str, object]:
+        (ROOT / "target").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
+            out_dir = Path(temporary)
+            receipt = out_dir / "quiet.result.json"
+            args = argparse.Namespace(
+                execute=True,
+                identity="fixture-identity",
+                cell="fixture-cell",
+                out_dir=out_dir,
+                result_receipt=receipt,
+                quiet_seconds=quiet_seconds,
+                operational=operational,
+                allow_profiler=False,
+                share_lease=False,
+                command=["/usr/bin/true", "--fixture"],
+            )
+            completed = subprocess.CompletedProcess(args.command, 0)
+            with mock.patch.object(ACCELERATOR_SAFE, "parse_args", return_value=args), \
+                    mock.patch.object(ACCELERATOR_SAFE, "LOCK_PATH", out_dir / "fixture.gpu.lock"), \
+                    mock.patch.object(ACCELERATOR_SAFE, "active_gpu_processes", return_value=[]), \
+                    mock.patch.object(ACCELERATOR_SAFE.time, "sleep") as sleep, \
+                    mock.patch.object(ACCELERATOR_SAFE.subprocess, "run", return_value=completed):
+                self.assertEqual(ACCELERATOR_SAFE.main(), 0)
+            self.assertEqual(
+                [call.args[0] for call in sleep.call_args_list],
+                [quiet_seconds, quiet_seconds],
+            )
+            return json.loads(receipt.read_text())
+
+    def test_operational_readiness_may_skip_settling_delays(self) -> None:
+        retained = self.run_fixture(operational=True, quiet_seconds=0)
+        self.assertTrue(retained["operational"])
+
+    def test_benchmark_cannot_disable_settling_delays(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
+            args = argparse.Namespace(
+                execute=True,
+                identity="fixture-identity",
+                cell="fixture-cell",
+                out_dir=Path(temporary),
+                result_receipt=None,
+                quiet_seconds=0,
+                operational=False,
+                allow_profiler=False,
+                share_lease=False,
+                command=["/usr/bin/true"],
+            )
+            with mock.patch.object(ACCELERATOR_SAFE, "parse_args", return_value=args), \
+                    self.assertRaisesRegex(SystemExit, "benchmark execution requires"):
+                ACCELERATOR_SAFE.main()
 
 
 if __name__ == "__main__":

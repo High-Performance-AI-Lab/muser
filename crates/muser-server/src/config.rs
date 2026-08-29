@@ -15,6 +15,7 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FileConfig {
+    pub node: Option<String>,
     pub gguf_path: Option<PathBuf>,
     pub hf_repo: Option<String>,
     pub host: Option<String>,

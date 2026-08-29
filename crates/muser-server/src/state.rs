@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use kvpack_handoff::MultimodalIdentityV2;
@@ -43,6 +43,7 @@ const DECODE_GAP_SAMPLES: usize = 4_096;
 /// tax every later request with a connect-and-wait before falling back.
 pub(crate) const REMOTE_BREAKER_FAILURES: u64 = 3;
 pub(crate) const REMOTE_BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
+const REMOTE_PRODUCER_BUSY: &str = "remote producer is busy with another prefill";
 
 /// Shared, thread-safe process state for the telemetry server. One instance
 /// is created at startup and handed to every connection handler behind an
@@ -170,6 +171,17 @@ pub struct ServerState {
     /// for local / missing / no model. `GET /health` reports it so the
     /// source is never hardcoded or implied.
     pub model_source_url: Option<String>,
+    /// Model identity installed by the dashboard-to-inference transition.
+    /// Static `serve --model` / `up --node` launches continue to use the
+    /// immutable fields above. A setup-only `muser up` starts with no model,
+    /// then publishes this complete metadata record immediately before the
+    /// prepared inference runtime becomes visible.
+    activated_model: OnceLock<ActivatedModel>,
+    /// Serializes the one legal setup -> inference transition. `OnceLock`
+    /// prevents replacement after publication; this mutex additionally
+    /// makes the metadata + runtime publication order atomic to callers.
+    runtime_install: Mutex<()>,
+    runtime_lifecycle: Mutex<RuntimeLifecycle>,
     /// Node onboarding jobs — the dashboard's "Add node" button. At most one
     /// runs at a time process-wide: the jobs drive ssh and the remote docker
     /// daemon, which two concurrent runs would interleave on. See
@@ -177,7 +189,66 @@ pub struct ServerState {
     pub(crate) node_jobs: crate::nodes_api::NodeJobs,
     /// The single immutable model plus its bounded pool of independent
     /// resident serving slots.
-    pub(crate) inference: Option<InferenceRuntime>,
+    pub(crate) inference: InferenceCell,
+}
+
+/// The inference runtime is immutable after it is made visible, but a setup
+/// dashboard needs to install it once without replacing the HTTP listener.
+/// Keeping the familiar `as_ref` / `as_mut` surface makes the static builders
+/// and request handlers use the same runtime representation.
+pub(crate) struct InferenceCell(OnceLock<InferenceRuntime>);
+
+impl InferenceCell {
+    fn new() -> Self {
+        Self(OnceLock::new())
+    }
+
+    pub(crate) fn as_ref(&self) -> Option<&InferenceRuntime> {
+        self.0.get()
+    }
+
+    fn as_mut(&mut self) -> Option<&mut InferenceRuntime> {
+        self.0.get_mut()
+    }
+
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.get().is_some()
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        self.0.get().is_none()
+    }
+
+    fn set(&self, runtime: InferenceRuntime) -> Result<(), Box<InferenceRuntime>> {
+        // Installation is once-only. Box the impossible duplicate value on
+        // the error path so the Result itself does not carry an 8+ KiB enum.
+        self.0.set(runtime).map_err(Box::new)
+    }
+
+    fn into_inner(self) -> Option<InferenceRuntime> {
+        self.0.into_inner()
+    }
+}
+
+struct ActivatedModel {
+    path: PathBuf,
+    bytes: Option<u64>,
+    sha256: Option<String>,
+    source_label: &'static str,
+    source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeLifecycleSnapshot {
+    pub(crate) phase: &'static str,
+    pub(crate) node: Option<String>,
+    pub(crate) detail: String,
+}
+
+struct RuntimeLifecycle {
+    phase: &'static str,
+    node: Option<String>,
+    detail: String,
 }
 
 #[derive(Default)]
@@ -915,6 +986,10 @@ pub enum RemotePrefillMode {
 pub struct RemotePrefillRuntime {
     receiver: RemoteReceiver,
     mode: RemotePrefillMode,
+    /// The native producer is one unchunked vLLM job at a time. Admit at
+    /// most one control request from this Mac instead of filling the remote
+    /// TCP backlog with work that can only time out behind a deep prefill.
+    producer_lease: Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -952,6 +1027,8 @@ pub enum InferenceLoadError {
     Resident(String),
     #[error("durable prefix cache: {0}")]
     Durable(String),
+    #[error("runtime activation: {0}")]
+    Activation(String),
 }
 
 impl ServerState {
@@ -1033,8 +1110,15 @@ impl ServerState {
             model_sha256,
             model_source_label,
             model_source_url: None,
+            activated_model: OnceLock::new(),
+            runtime_install: Mutex::new(()),
+            runtime_lifecycle: Mutex::new(RuntimeLifecycle {
+                phase: "setup",
+                node: None,
+                detail: "Add a prefill node to start the Mac decoder".into(),
+            }),
             node_jobs: crate::nodes_api::NodeJobs::new(),
-            inference: None,
+            inference: InferenceCell::new(),
         }
     }
 
@@ -1094,27 +1178,39 @@ impl ServerState {
         };
         let (sessions, staging) =
             split_staging_generation(sessions, parallel).map_err(InferenceLoadError::Resident)?;
-        self.inference = Some(InferenceRuntime {
-            model,
-            vision: None,
-            vision_identity: None,
-            dflash_identity_sha256: None,
-            dflash: None,
-            dflash_staging: None,
-            staging: Mutex::new(staging),
-            slots: SlotPool::new(sessions),
-            decode_batcher: DecodeBatcher::new(backend == "metal", parallel),
-            backend,
-            max_context,
-            context_policy,
-            raw_retain_prefix,
-            remote_prefill: None,
-            prefix_reuse: Mutex::new(
-                PrefixReuse::new(resident_cache_bytes)
-                    .map_err(|error| InferenceLoadError::Resident(error.to_string()))?,
-            ),
-            prefix_cache_enabled,
-        });
+        self.inference
+            .set(InferenceRuntime {
+                model,
+                vision: None,
+                vision_identity: None,
+                dflash_identity_sha256: None,
+                dflash: None,
+                dflash_staging: None,
+                staging: Mutex::new(staging),
+                slots: SlotPool::new(sessions),
+                decode_batcher: DecodeBatcher::new(backend == "metal", parallel),
+                backend,
+                max_context,
+                context_policy,
+                raw_retain_prefix,
+                remote_prefill: None,
+                prefix_reuse: Mutex::new(
+                    PrefixReuse::new(resident_cache_bytes)
+                        .map_err(|error| InferenceLoadError::Resident(error.to_string()))?,
+                ),
+                prefix_cache_enabled,
+            })
+            .map_err(|_| {
+                InferenceLoadError::Resident("inference runtime was initialized twice".into())
+            })?;
+        *self
+            .runtime_lifecycle
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RuntimeLifecycle {
+            phase: "ready",
+            node: None,
+            detail: "Mac decoder is ready".into(),
+        };
         Ok(self)
     }
 
@@ -1311,11 +1407,12 @@ impl ServerState {
             .as_mut()
             .ok_or_else(|| InferenceLoadError::Remote("inference runtime is absent".into()))?;
         validate_remote_dflash_policy(config.producer_mode, dflash_path.is_some())?;
-        let model_path = self
-            .model_path
-            .as_deref()
-            .ok_or_else(|| InferenceLoadError::Remote("model path is absent".into()))?;
-        let actual_model = sha256_file(model_path).map_err(InferenceLoadError::Remote)?;
+        // Startup already admitted the model bytes before constructing this
+        // state. Re-reading a 17-20 GB GGUF here made every remote launch hash
+        // the same file twice without adding a new trust boundary.
+        let actual_model = self.model_sha256.as_deref().ok_or_else(|| {
+            InferenceLoadError::Remote("verified model identity is absent".into())
+        })?;
         if actual_model != config.identity.model_sha256 {
             return Err(InferenceLoadError::Remote(
                 "cluster model SHA-256 differs from the loaded GGUF".into(),
@@ -1339,8 +1436,131 @@ impl ServerState {
             }
         }
         let receiver = RemoteReceiver::bind(config).map_err(InferenceLoadError::Remote)?;
-        runtime.remote_prefill = Some(RemotePrefillRuntime { receiver, mode });
+        runtime.remote_prefill = Some(RemotePrefillRuntime {
+            receiver,
+            mode,
+            producer_lease: Mutex::new(()),
+        });
         Ok(self)
+    }
+
+    /// Publish a fully prepared decoder + receiver into an already-running
+    /// setup server. Preparation happens off to the side, so request handlers
+    /// can observe only "not ready" or the complete runtime — never a model
+    /// without its authenticated remote receiver.
+    pub(crate) fn install_prepared_runtime(
+        &self,
+        prepared: ServerState,
+        node: &str,
+    ) -> Result<(), InferenceLoadError> {
+        let _install = self
+            .runtime_install
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.inference.is_some() || self.activated_model.get().is_some() {
+            return Err(InferenceLoadError::Activation(
+                "an inference runtime is already installed".into(),
+            ));
+        }
+
+        let runtime = prepared.inference.into_inner().ok_or_else(|| {
+            InferenceLoadError::Activation("prepared inference runtime is absent".into())
+        })?;
+        let path = prepared.model_path.ok_or_else(|| {
+            InferenceLoadError::Activation("prepared model path is absent".into())
+        })?;
+        if prepared.model_sha256.as_deref().is_none_or(str::is_empty) {
+            return Err(InferenceLoadError::Activation(
+                "prepared model identity is absent".into(),
+            ));
+        }
+        let metadata = ActivatedModel {
+            path,
+            bytes: prepared.model_bytes,
+            sha256: prepared.model_sha256,
+            source_label: prepared.model_source_label,
+            source_url: prepared.model_source_url,
+        };
+
+        // Publication order is deliberate. A handler that acquires the
+        // inference OnceLock is guaranteed to see the metadata set before it.
+        self.activated_model.set(metadata).map_err(|_| {
+            InferenceLoadError::Activation("model metadata was installed twice".into())
+        })?;
+        self.inference.set(runtime).map_err(|_| {
+            InferenceLoadError::Activation("inference runtime was installed twice".into())
+        })?;
+        self.set_runtime_lifecycle(
+            "ready",
+            Some(node),
+            "Mac decoder and remote prefill are ready",
+        );
+        Ok(())
+    }
+
+    pub(crate) fn model_path(&self) -> Option<&std::path::Path> {
+        self.activated_model
+            .get()
+            .map(|model| model.path.as_path())
+            .or(self.model_path.as_deref())
+    }
+
+    pub(crate) fn model_bytes(&self) -> Option<u64> {
+        self.activated_model
+            .get()
+            .and_then(|model| model.bytes)
+            .or(self.model_bytes)
+    }
+
+    pub(crate) fn model_sha256(&self) -> Option<&str> {
+        self.activated_model
+            .get()
+            .and_then(|model| model.sha256.as_deref())
+            .or(self.model_sha256.as_deref())
+    }
+
+    pub(crate) fn model_source_label(&self) -> &str {
+        self.activated_model
+            .get()
+            .map(|model| model.source_label)
+            .unwrap_or(self.model_source_label)
+    }
+
+    pub(crate) fn model_source_url(&self) -> Option<&str> {
+        self.activated_model
+            .get()
+            .and_then(|model| model.source_url.as_deref())
+            .or(self.model_source_url.as_deref())
+    }
+
+    pub(crate) fn mark_runtime_loading(&self, node: &str, detail: &str) {
+        self.set_runtime_lifecycle("loading", Some(node), detail);
+    }
+
+    pub(crate) fn mark_runtime_failed(&self, node: &str, detail: &str) {
+        self.set_runtime_lifecycle("failed", Some(node), detail);
+    }
+
+    pub(crate) fn runtime_lifecycle(&self) -> RuntimeLifecycleSnapshot {
+        let lifecycle = self
+            .runtime_lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        RuntimeLifecycleSnapshot {
+            phase: lifecycle.phase,
+            node: lifecycle.node.clone(),
+            detail: lifecycle.detail.clone(),
+        }
+    }
+
+    fn set_runtime_lifecycle(&self, phase: &'static str, node: Option<&str>, detail: &str) {
+        let mut lifecycle = self
+            .runtime_lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lifecycle.phase = phase;
+        lifecycle.node = node.map(str::to_string);
+        lifecycle.detail = detail.to_string();
     }
 
     pub fn uptime_s(&self) -> f64 {
@@ -1459,6 +1679,13 @@ impl ServerState {
     /// Record a failed remote receive and, after
     /// [`REMOTE_BREAKER_FAILURES`] consecutive ones, open the breaker.
     pub(crate) fn record_remote_failure(&self, error: &str) {
+        // Local admission did not touch the network and says nothing about
+        // producer health. Count the caller's fallback separately, but never
+        // open the connectivity breaker because Mac slots contended for the
+        // deliberately single-flight node.
+        if remote_producer_is_busy(error) {
+            return;
+        }
         self.remote_receive_failures.fetch_add(1, Ordering::Relaxed);
         *self
             .last_remote_error
@@ -1744,6 +1971,7 @@ impl RemotePrefillRuntime {
         multimodal: Option<(MultimodalIdentityV2, Vec<PrefillControlSegmentV2>)>,
         max_context: usize,
     ) -> Result<RemoteReceiveReceipt, String> {
+        let _lease = try_producer_lease(&self.producer_lease)?;
         self.receiver.receive(
             session,
             dflash,
@@ -1753,6 +1981,20 @@ impl RemotePrefillRuntime {
             self.mode == RemotePrefillMode::Required,
         )
     }
+}
+
+fn try_producer_lease(gate: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+    match gate.try_lock() {
+        Ok(lease) => Ok(lease),
+        Err(std::sync::TryLockError::WouldBlock) => Err(REMOTE_PRODUCER_BUSY.into()),
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            Err("remote producer admission gate is unhealthy; restart muser".into())
+        }
+    }
+}
+
+pub(crate) fn remote_producer_is_busy(error: &str) -> bool {
+    error == REMOTE_PRODUCER_BUSY
 }
 
 fn sha256_file(path: &std::path::Path) -> Result<String, String> {
@@ -1933,6 +2175,18 @@ mod tests {
     }
 
     #[test]
+    fn local_single_flight_contention_does_not_poison_the_remote_breaker() {
+        let s = ServerState::new(None);
+        for _ in 0..(REMOTE_BREAKER_FAILURES * 3) {
+            s.record_remote_failure(REMOTE_PRODUCER_BUSY);
+        }
+        assert!(s.remote_route_is_open());
+        assert_eq!(s.remote_receive_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(s.remote_consecutive_failures.load(Ordering::Relaxed), 0);
+        assert!(s.last_remote_error.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn failures_must_be_consecutive_to_open_the_breaker() {
         let s = ServerState::new(None);
         s.record_remote_failure("first");
@@ -2004,6 +2258,18 @@ mod tests {
                 .to_string()
                 .contains("requires MUSER_CROSS_VENDOR_QK=1"));
         }
+    }
+
+    #[test]
+    fn the_single_flight_producer_gate_refuses_a_tcp_backlog_queue() {
+        let gate = Mutex::new(());
+        let first = try_producer_lease(&gate).unwrap();
+        assert_eq!(
+            try_producer_lease(&gate).unwrap_err(),
+            "remote producer is busy with another prefill"
+        );
+        drop(first);
+        assert!(try_producer_lease(&gate).is_ok());
     }
 
     #[test]

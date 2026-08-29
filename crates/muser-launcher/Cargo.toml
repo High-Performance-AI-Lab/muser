@@ -1,0 +1,11 @@
+[package]
+name = "muser-launcher"
+description = "Gatekeeper-safe macOS application launcher for the Muser user bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "muser-launcher"
+path = "src/main.rs"

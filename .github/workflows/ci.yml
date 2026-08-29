@@ -62,3 +62,95 @@ jobs:
         run: rustup toolchain install 1.93.1 --profile minimal --component rustfmt
       - name: Check formatting
         run: cargo fmt --check
+
+  rustsec:
+    name: Rust dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Deny vulnerabilities and yanked dependencies
+        run: cargo audit --deny warnings
+
+  public-onboarding-assets:
+    name: Public onboarding assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Prove every first-install asset is anonymously range-readable
+        run: scripts/check_public_onboarding_assets.sh
+
+  user-bundle:
+    name: Clone-to-runnable macOS bundle
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Muser
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+      - name: Build the native user bundle
+        run: scripts/build_user_bundle.sh --output dist
+      - name: Validate release-operator scripts
+        run: |
+          bash -n scripts/notarize_user_bundle.sh scripts/verify_notarized_user_bundle.sh
+          scripts/notarize_user_bundle.sh --help
+      - name: Prove bundle assembly is deterministic
+        run: |
+          cp dist/muser-*-macos-arm64.tar.gz "$RUNNER_TEMP/first-muser-bundle.tar.gz"
+          scripts/build_user_bundle.sh --output dist --skip-build
+          cmp "$RUNNER_TEMP/first-muser-bundle.tar.gz" dist/muser-*-macos-arm64.tar.gz
+      - name: Prove a different fresh checkout builds identical bytes
+        run: |
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$RUNNER_TEMP/muser-second-checkout"
+          cd "$RUNNER_TEMP/muser-second-checkout"
+          scripts/build_user_bundle.sh --output dist
+          cmp "$RUNNER_TEMP/first-muser-bundle.tar.gz" dist/muser-*-macos-arm64.tar.gz
+      - name: Verify the extracted bundle contract
+        run: |
+          set -euo pipefail
+          archive=$(find dist -maxdepth 1 -name 'muser-*-macos-arm64.tar.gz' -type f)
+          test -n "$archive"
+          (cd dist && shasum -a 256 -c "$(basename "$archive").sha256")
+          mkdir bundle-check
+          tar -xzf "$archive" -C bundle-check
+          root=$(find bundle-check -mindepth 1 -maxdepth 1 -type d)
+          (cd "$root" && shasum -a 256 -c SHA256SUMS)
+          (cd /tmp && "$GITHUB_WORKSPACE/$root/bin/muser" --help >/dev/null)
+          (cd /tmp && "$GITHUB_WORKSPACE/$root/Start Muser.command" --help >/dev/null)
+          "$root/Muser.app/Contents/MacOS/Muser" --check-bundle
+          "$root/Muser.app/Contents/Helpers/muser-terminal" --check-bundle
+          (cd /tmp && MUSER_HOME="$RUNNER_TEMP/muser-app-home" \
+            MUSER_REPO_ROOT="$GITHUB_WORKSPACE/$root/Muser.app/Contents/Resources/muser" \
+            "$GITHUB_WORKSPACE/$root/Muser.app/Contents/Helpers/muser" \
+              --help >/dev/null)
+          "$root/Muser.app/Contents/Helpers/muser-terminal" --help >/dev/null
+          test -x "$root/bin/muser-remote-qualify"
+          test -x "$root/bin/muser-launcher"
+          test -x "$root/Start Muser.command"
+          test -x "$root/Muser.app/Contents/MacOS/Muser"
+          test -x "$root/Muser.app/Contents/Helpers/muser"
+          test -x "$root/Muser.app/Contents/Helpers/muser-terminal"
+          test -x "$root/Muser.app/Contents/Helpers/muser-remote-qualify"
+          test ! -e "$root/Muser.app/Contents/Resources/Start Muser.command"
+          plutil -lint "$root/Muser.app/Contents/Info.plist"
+          codesign --verify --deep --strict "$root/Muser.app"
+          test -f "$root/CHANGELOG.md"
+          test -f "$root/scripts/gx10/vllm/native_onboarding_identity_v1.json"
+          test -f "$root/scripts/gx10/bootstrap_node.sh"
+          test -f "$root/release/nvfp4-runtime-identity-v1.json"
+          test -f "$root/release/nvfp4-runtime-overlay-v2.json"
+          (cd /tmp && MUSER_HOME="$RUNNER_TEMP/muser-bundle-home" \
+            "$GITHUB_WORKSPACE/$root/bin/muser" node add user@gx10.example \
+              --dry-run --json >/dev/null)
+          (cd /tmp && MUSER_HOME="$RUNNER_TEMP/muser-app-dry-run-home" \
+            MUSER_REPO_ROOT="$GITHUB_WORKSPACE/$root/Muser.app/Contents/Resources/muser" \
+            "$GITHUB_WORKSPACE/$root/Muser.app/Contents/Helpers/muser" \
+              node add user@gx10.example --dry-run --json >/dev/null)

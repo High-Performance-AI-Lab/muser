@@ -67,8 +67,10 @@ of the bytes** for a bit-identical result ([`kvpack.md`](kvpack.md)).
   (dashboard, or `muser node add user@host`) does the whole pipeline:
   preflight, pinned runtime deploy, lane-specific model acquisition with
   SHA-256 verification (including the resumable native Mac GGUF download),
-  enrollment key provisioning, producer start, and the lane-declared
-  three-handoff qualification recipe before the node is marked healthy.
+  enrollment key provisioning, producer start, and one bounded authenticated
+  handoff through the production receiver before the node is marked healthy.
+  `muser node qualify <name>` runs the separate three-repetition
+  local-reference evidence cell.
   Registry-unavailable installs use the public split Docker archive and still
   admit only the same exact image ID.
 - **A wired 10GbE path for the measured numbers.** The reported matrix used
@@ -84,16 +86,23 @@ of the bytes** for a bit-identical result ([`kvpack.md`](kvpack.md)).
 Then serve with remote prefill:
 
 ```sh
-MUSER_CROSS_VENDOR_QK=1 \
-  muser serve \
-  --model ~/.muser/models/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf \
-  --prefill remote \
-  --cluster-config ~/.muser/nodes/host/cluster.json
+muser up
 ```
 
-`MUSER_CROSS_VENDOR_QK=1` pins the cross-vendor math route the CUDA producer
-bakes in — the Mac must derive Q/K exactly the way the producer did, or the
-KV is foreign by construction, and the receiver refuses it.
+On a fresh installation that command opens setup and Add Node activates the
+Mac decoder without restarting the listener. On later launches it selects the
+newest compatible healthy native enrollment. `up --node <name>` is the
+explicit selector when several enrollments exist. Both require the remote
+route and pin the cross-vendor math graph the CUDA producer bakes in. The
+lower-level `serve --prefill auto|remote --cluster-config ...` flags remain
+available; users do not need to export an internal environment variable.
+
+The released topology has one resident producer and four isolated Mac decode
+slots. Remote prefill is deliberately single-flight: a concurrent request does
+not disappear into the producer's TCP backlog or poison its health breaker; it
+receives HTTP 429 with `error.type="producer_busy"` and `Retry-After: 1` so an
+OpenAI-compatible client can retry. Scale-out producer scheduling is roadmap,
+not implied by the four decoder slots.
 
 ## Correctness: what "correct" means here
 

@@ -73,12 +73,12 @@ fn main() {
 
     let result = match cli.command {
         Command::Up(args) => up::run(args).map_err(|e| e.friendly_message()),
-        Command::Serve(args) => {
+        Command::Serve(args) => prepare_serve(&args).and_then(|()| {
             if let Some(seconds) = args.benchmark_deadline_seconds.filter(|value| *value > 0) {
                 arm_benchmark_process_deadline(seconds);
             }
             run_serve(args)
-        }
+        }),
         // `muser node add` exits non-zero unless the smoke step passed, so
         // the dashboard's button never reports a node ready on a partial run.
         Command::Node(args) => node::run(args),
@@ -90,6 +90,37 @@ fn main() {
         eprintln!("{} {}", style("muser: error:").red().bold(), message);
         eprintln!();
         std::process::exit(1);
+    }
+}
+
+/// Select the pinned cross-vendor Metal route from the public serving flag.
+/// Requiring users to know an internal environment variable made the
+/// otherwise complete `--prefill remote` command fail at startup. Preserve a
+/// deliberately supplied value (and reject a bad one), but set the exact
+/// route automatically when the flag already expresses the user's intent.
+///
+/// This runs before the benchmark deadline thread or server workers exist;
+/// changing a process environment after other threads start would be unsafe.
+fn prepare_serve(args: &ServeArgs) -> Result<(), String> {
+    prepare_remote_prefill(!matches!(args.prefill, cli::PrefillArg::Local))
+}
+
+/// Select the qualified cross-vendor decoder route before any worker thread
+/// exists. Both `serve --prefill ...` and `up --node ...` use this boundary.
+fn prepare_remote_prefill(enabled: bool) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    match std::env::var_os("MUSER_CROSS_VENDOR_QK") {
+        None => {
+            // SAFETY: `main` calls this before spawning any thread.
+            unsafe { std::env::set_var("MUSER_CROSS_VENDOR_QK", "1") };
+            Ok(())
+        }
+        Some(value) if value == "1" => Ok(()),
+        Some(_) => {
+            Err("MUSER_CROSS_VENDOR_QK must be unset or exactly 1 for remote prefill".into())
+        }
     }
 }
 
@@ -123,6 +154,17 @@ fn run_serve(args: ServeArgs) -> Result<(), String> {
     if !matches!(args.prefill, cli::PrefillArg::Local) && args.cluster_config.is_none() {
         return Err("--prefill auto or remote requires --cluster-config".into());
     }
+    let _topology_lock = args
+        .cluster_config
+        .as_deref()
+        .map(|cluster| {
+            let home = node::muser_home()?;
+            node::registry::OperationLock::acquire(
+                &home,
+                &format!("serving remote prefill with {}", cluster.display()),
+            )
+        })
+        .transpose()?;
     if args.ane_manifest.is_some() && args.dflash.is_none() {
         return Err("--ane-manifest requires --dflash".into());
     }

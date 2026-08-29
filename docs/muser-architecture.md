@@ -15,7 +15,7 @@ Historical Ferrite extraction provenance is retained separately in
 Muser v0.1 serves one pinned Muse Glimmer model. Text, vision, Metal DFlash,
 GX10 prefill/storage, the dashboard, logical
 sessions, and decode/storage migration are in scope. LoRA, model routing or
-hot-swap, infill, reranking, Responses and Anthropic APIs, built-in tool
+hot-swap, infill, reranking, Responses and vendor-specific Messages APIs, built-in tool
 execution, and llama.cpp's Web UI are out of scope.
 
 The compatibility reference is llama.cpp commit
@@ -107,7 +107,9 @@ bounded output channels.
 Authorization is deliberately asymmetric:
 
 - loopback inference is keyless;
-- loopback management needs bearer auth or a same-origin dashboard session;
+- keyless loopback management is available only through an automatically
+  minted same-origin dashboard session whose Host is a loopback literal or
+  `localhost`; a configured key disables this bootstrap;
 - dashboard login exchanges the API key for a Secure, HttpOnly,
   SameSite=Strict cookie, and cookie-authenticated mutations additionally need
   an exact Origin match and CSRF token;
@@ -151,12 +153,15 @@ fsync before target+DFlash publication and ACK. Any durability failure
 degrades the route until repair and restart.
 
 The v0.1 topology is one Mac decoder and one Spark/GX10 producer. The transport
-is mTLS over TCP, not RDMA/RoCE. Qualification is a property of the enrolled
-producer identity. The combined kquant lane requires three ordered exact
+is mTLS over TCP, not RDMA/RoCE. Operational health and qualification are
+separate properties of the enrolled producer identity. The shipped native
+lane becomes healthy after one bounded authenticated target-KV install and
+Metal decode; it makes no local-reference claim. The explicit full
+qualification requires three ordered text repetitions under its exact-token
+and declared bounded-logit policy, with no DFlash identity. The combined
+kquant lane requires three ordered exact
 target-plus-DFlash repetitions at a 2,048-position prompt and 256 generated
-tokens. The native tensor-core NVFP4 lane requires three ordered text
-repetitions under its exact-token and declared bounded-logit policy, with no
-DFlash identity. The integer-dot producer remains available through
+tokens. The integer-dot producer remains available through
 `MUSER_NVFP4_EXACT=1` as the native lane's verification anchor. Exact and
 native producers derive different target-cache identities; an unknown recipe
 is refused at enrollment. Multi-producer scheduling and node discovery are not

@@ -260,7 +260,7 @@
         "bytes_total": { "type": "integer", "minimum": 0 },
         "bytes_sent": { "type": "integer", "minimum": 0 },
         "phase": { "enum": ["streaming_nope", "shipping_swa", "done"], "description": "Handoff phase vocabulary. The current snapshot retains completed receipts only and therefore emits done." },
-        "throughput_gbps": { "type": "number", "minimum": 0, "description": "Measured effective installed-payload rate in gigabits/s from committed bytes and receiver transfer time. The v0.1 release floor is a three-handoff median of at least 3.0 Gbps; this field makes no generic link-class claim." },
+        "throughput_gbps": { "type": "number", "minimum": 0, "description": "Measured effective installed-payload rate in gigabits/s from committed bytes and receiver transfer time. The native operational gate requires at least 3.0 Gbps on its live handoff; full qualification and the research lane retain multi-sample gates. This field makes no generic link-class claim." },
         "hidden_pct": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of this transfer overlapped with (hidden behind) prefill compute. [target] gate G-B2 >= 0.95." },
         "_control_ns": { "type": "integer", "minimum": 0, "description": "UI-convenience extension: the receipt's own control-channel round-trip time, nanoseconds. [measured]. Part of the phase split alongside _accept_ns -- the commit itself is already visible as throughput_gbps." },
         "_accept_ns": { "type": "integer", "minimum": 0, "description": "UI-convenience extension: the receipt's own producer-wait/accept time, nanoseconds. [measured]." }

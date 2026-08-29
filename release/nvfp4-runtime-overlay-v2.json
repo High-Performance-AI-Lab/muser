@@ -1,0 +1,83 @@
+{
+  "schema": "muser.nvfp4-runtime-overlay.v1",
+  "status": "qualified",
+  "base_image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+  "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+  "adapter_sha256": "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
+  "target_cache_identity_sha256": "c34ce9b3deabd53b69280b00a9d1098844b97ec854d230b9f4d556acd9d776a3",
+  "startup": {
+    "max_model_len": 131072,
+    "max_num_batched_tokens": 8192,
+    "chunked_prefill": true,
+    "startup_warmup_tokens": 2048
+  },
+  "mounts": {
+    "scripts/gx10/llamacpp/llamacpp_session_send.py": "33aaa90cd56fb1b4bf9088e6bcb5d4142912c61a1dd60aaf97322d6c2680c729",
+    "scripts/gx10/llamacpp/muser_v2_send.py": "a4dbd512c005907a23eca57f7adc9011317e1727e9a0e2e10128936e67b3e139",
+    "scripts/gx10/llamacpp/protocol.py": "e8ed79b0ab4571a91fcf6dff81ee44a84c7c46dc2b116b58c3cc6bb8a23ce8f2",
+    "scripts/gx10/vllm/muser_vllm/__init__.py": "81e6038a78e39c026d923fc2caae14f00d246b60f5cef873d8e49ded38d2e509",
+    "scripts/gx10/vllm/muser_vllm/composite_bundle.py": "404ba2962c11aee7fff6e56f44f766545b5c6e60e8b677cc7b12aab9a27a5f5a",
+    "scripts/gx10/vllm/muser_vllm/composite_connector.py": "dd6ea4422a6a5810c60032f217cb243eb659e72a22efaa3047fabde0e9a46861",
+    "scripts/gx10/vllm/muser_vllm/connector.py": "8232d0b519b4ec7f303cc763b041d7376896d4bc137011a9e314938d99b05b1b",
+    "scripts/gx10/vllm/muser_vllm/dflash_capture.py": "fcfa374d913f484fc27c82ed16ae35a4f07ba9285b93247ea9eaa7917ec8cb99",
+    "scripts/gx10/vllm/muser_vllm/exact_attention.py": "d6e3a0076dd888ab7a20331846461d91082ea2ee8addc8144b1b2ad325f80a84",
+    "scripts/gx10/vllm/muser_vllm/exact_fp4_mm.py": "ae5025c37916a3c5676f4061db5377500ea3eb20cbd303e541f2227e0fcbd44d",
+    "scripts/gx10/vllm/muser_vllm/exact_fp4_quant.py": "c2d722764952de9954c22daaea849867522b9b6a6ce86068d747dc6130a17175",
+    "scripts/gx10/vllm/muser_vllm/exact_rms_norm.py": "4d63aabb0843a4d7de2fc86b85c5787ffda3c10e314864c9e2fa74eff7e3e27c",
+    "scripts/gx10/vllm/muser_vllm/exact_rope.py": "ac75554db8642adaf119ad8f85da5a2f4a5f83cabf45d09f24e7754037551db0",
+    "scripts/gx10/vllm/muser_vllm/exact_swiglu.py": "fc33ce0c5f6d7ae3f1bffd6f65908c3f57130c4b5871d631b87c54afbca19230",
+    "scripts/gx10/vllm/muser_vllm/native_capture.py": "66ce9a018e6e969702a10f12151ba5b48d7df052ef0746bdd5d3388f997b3a40",
+    "scripts/gx10/vllm/muser_vllm/oracle_capture.py": "e317d81ecf9783f30227081ba62865d136248fe5b5357c5a236c6f0e5617b295",
+    "scripts/gx10/vllm/muser_vllm/packing.py": "31bb3a1f0c7e18b01524df974474c9042f0eba6568489cf165c16ab22e9b3432",
+    "scripts/gx10/vllm/muser_vllm/receipt.py": "b337fdc8c5c43556f020f55fe49bfa4b743d1d41271ef4a2f816a10005305c5f",
+    "scripts/gx10/vllm/muser_vllm/rope_cache.py": "efdb43ab7d2b94c886225a9f1a32bd878cee69d4d892cd06b4d74978bc7fa0cc",
+    "scripts/gx10/vllm/request_producer.py": "85b7e1e87a9ddabca1c9c5d8554c1850406366e7a5da979d0253991311bc0363",
+    "scripts/gx10/vllm/resident_producer.py": "12e157c709e3cb938243e45366f4dcb39ea4e0f000f170945017fa3e5dac34e4"
+  },
+  "adapter_identity": {
+    "schema": "muser.spark-nvfp4-adapter.v1",
+    "image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+    "connector_sha256": "8232d0b519b4ec7f303cc763b041d7376896d4bc137011a9e314938d99b05b1b",
+    "dflash_capture_sha256": "fcfa374d913f484fc27c82ed16ae35a4f07ba9285b93247ea9eaa7917ec8cb99",
+    "exact_attention_sha256": "d6e3a0076dd888ab7a20331846461d91082ea2ee8addc8144b1b2ad325f80a84",
+    "exact_fp4_mm_sha256": "ae5025c37916a3c5676f4061db5377500ea3eb20cbd303e541f2227e0fcbd44d",
+    "exact_fp4_quant_sha256": "c2d722764952de9954c22daaea849867522b9b6a6ce86068d747dc6130a17175",
+    "exact_rms_norm_sha256": "4d63aabb0843a4d7de2fc86b85c5787ffda3c10e314864c9e2fa74eff7e3e27c",
+    "exact_rope_sha256": "ac75554db8642adaf119ad8f85da5a2f4a5f83cabf45d09f24e7754037551db0",
+    "exact_swiglu_sha256": "fc33ce0c5f6d7ae3f1bffd6f65908c3f57130c4b5871d631b87c54afbca19230",
+    "handoff_sender_sha256": "a4dbd512c005907a23eca57f7adc9011317e1727e9a0e2e10128936e67b3e139",
+    "native_capture_sha256": "66ce9a018e6e969702a10f12151ba5b48d7df052ef0746bdd5d3388f997b3a40",
+    "packing_sha256": "31bb3a1f0c7e18b01524df974474c9042f0eba6568489cf165c16ab22e9b3432",
+    "rope_cache_sha256": "efdb43ab7d2b94c886225a9f1a32bd878cee69d4d892cd06b4d74978bc7fa0cc"
+  },
+  "qualification": {
+    "cpu_contract_tests": "pass",
+    "cold_start_seconds": 187,
+    "cold_start_baseline_seconds": 268,
+    "cold_start_milestones_seconds": {
+      "weights_finished": 108,
+      "kv_warmup_started": 115,
+      "request_warmup_started": 153,
+      "ready": 187
+    },
+    "operational_prompt_tokens": [2048, 16384],
+    "publication_qualification": {
+      "status": "pass",
+      "finished_utc": "2026-08-29T02:02:39Z",
+      "recipe": "native/text",
+      "prompt_tokens": 2048,
+      "output_tokens": 256,
+      "repetitions": 3,
+      "exact_tokens": true,
+      "deterministic_remote_output": true,
+      "generated_tokens_sha256": "42f09900514bdf44e3ea7f3b1935da4091f3321fb4a390b67c76b994de40d259",
+      "remote_ttft_ns": [1615561166, 1653531708, 1635683584],
+      "producer_payload_gbps": [5.589674666666666, 5.7747632317880795, 6.866057070866142],
+      "installed_bytes_per_repetition": 108998656,
+      "installed_segments_per_repetition": 16,
+      "remote_local_logit_max_abs": 10.884401,
+      "remote_local_logit_mean_abs": 1.233788776361515
+    }
+  }
+}

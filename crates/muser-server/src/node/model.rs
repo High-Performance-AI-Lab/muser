@@ -26,6 +26,7 @@ use super::registry::{NodeEntry, ProducerKind};
 use super::{Ctx, Result};
 
 pub const BOOTSTRAP: &str = "bootstrap_node.sh";
+const CONSUMER_VALIDATION_SCHEMA: &str = "muser.model-validation.v1";
 
 /// `bootstrap_node.sh model`'s "no verified copy and no source" exit.
 const UPLOAD_REQUIRED: i32 = 3;
@@ -124,6 +125,11 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         install(ctx, entry, role, artifact, &models, &local_dir, None)?;
     }
 
+    let local_target = local_dir.join(&release.target.filename);
+    entry.consumer_model_path = local_target
+        .canonicalize()
+        .ok()
+        .map(|path| path.display().to_string());
     entry.updated = crate::timefmt::now_rfc3339();
     entry.last_error = None;
     ctx.progress.emit(
@@ -189,7 +195,71 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         return Ok(());
     }
 
-    acquire_native_consumer(ctx, &identity, &consumer)?;
+    if !bootstrap_local.is_file() {
+        return Err(format!("{} is missing", bootstrap_local.display()));
+    }
+
+    let consumer_validation_current = consumer_validation_is_current(
+        entry.consumer_validation.as_deref(),
+        &consumer,
+        &identity.consumer.sha256,
+    );
+    if consumer_validation_current {
+        ctx.progress.emit(
+            Step::Model,
+            Status::Info,
+            "using the unchanged decoder's prior full SHA-256 verification",
+        );
+    }
+
+    // The consumer lives on this Mac and the checkpoint lives on the GX10.
+    // Their digest checks (or first download streams) have no shared mutable
+    // state, and enrollment has not begun yet, so overlap them. Both results
+    // are joined and required before any trust material is rotated.
+    std::thread::scope(|scope| -> Result<()> {
+        let consumer_check = scope.spawn(|| {
+            if consumer_validation_current {
+                Ok(())
+            } else {
+                acquire_native_consumer(ctx, &identity, &consumer)
+            }
+        });
+        let checkpoint_check = (|| -> Result<()> {
+            ssh.scp(&bootstrap_local, &format!("{lane}/{BOOTSTRAP}"))?;
+            for file in &identity.checkpoint_files {
+                let artifact = identity.checkpoint_artifact(file);
+                let source = native_source(ctx, &artifact);
+                install(
+                    ctx,
+                    entry,
+                    "NVFP4 checkpoint",
+                    &artifact,
+                    &models,
+                    &checkpoint_local,
+                    Some(&source),
+                )?;
+            }
+            Ok(())
+        })();
+        let consumer_check = consumer_check
+            .join()
+            .map_err(|_| "native Mac decode artifact worker panicked".to_string())?;
+        consumer_check?;
+        checkpoint_check
+    })?;
+
+    ctx.remember_native_consumer(&consumer, &identity.consumer.sha256);
+    entry.consumer_validation = Some(consumer_validation_stamp(
+        &consumer,
+        &identity.consumer.sha256,
+    )?);
+    entry.consumer_model_path = Some(
+        consumer
+            .canonicalize()
+            .map_err(|error| format!("resolve native Mac decode artifact: {error}"))?
+            .display()
+            .to_string(),
+    );
     ctx.progress.emit(
         Step::Model,
         Status::Info,
@@ -198,23 +268,6 @@ fn run_native(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
             &identity.consumer.sha256[..12]
         ),
     );
-    if !bootstrap_local.is_file() {
-        return Err(format!("{} is missing", bootstrap_local.display()));
-    }
-    ssh.scp(&bootstrap_local, &format!("{lane}/{BOOTSTRAP}"))?;
-    for file in &identity.checkpoint_files {
-        let artifact = identity.checkpoint_artifact(file);
-        let source = native_source(ctx, &artifact);
-        install(
-            ctx,
-            entry,
-            "NVFP4 checkpoint",
-            &artifact,
-            &models,
-            &checkpoint_local,
-            Some(&source),
-        )?;
-    }
 
     entry.updated = crate::timefmt::now_rfc3339();
     entry.last_error = None;
@@ -247,12 +300,40 @@ fn acquire_native_consumer(
 ) -> Result<()> {
     match std::fs::symlink_metadata(target) {
         Ok(_) => {
-            return verify_regular_file(
+            ctx.progress.emit(
+                Step::Model,
+                Status::Info,
+                &format!(
+                    "native Mac decode artifact is present; verifying {:.1} GB",
+                    identity.consumer.bytes as f64 / 1e9
+                ),
+            );
+            let announced = std::cell::Cell::new((0_u64, std::time::Instant::now()));
+            return verify_regular_file_with_progress(
                 target,
                 identity.consumer.bytes,
                 &identity.consumer.sha256,
                 "native Mac decode artifact",
-            )
+                |done, total| {
+                    let gib = done / (1024 * 1024 * 1024);
+                    let (last_gib, last_update) = announced.get();
+                    if gib > last_gib
+                        || done == total
+                        || last_update.elapsed() >= std::time::Duration::from_secs(15)
+                    {
+                        announced.set((gib, std::time::Instant::now()));
+                        ctx.progress.emit(
+                            Step::Model,
+                            Status::Info,
+                            &format!(
+                                "verifying native Mac decode artifact {:.1}/{:.1} GB",
+                                done as f64 / 1e9,
+                                total as f64 / 1e9
+                            ),
+                        );
+                    }
+                },
+            );
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -290,7 +371,7 @@ fn acquire_native_consumer(
             }
         })
         .collect::<Vec<_>>();
-    let announced = std::cell::Cell::new(0_u64);
+    let announced = std::cell::Cell::new((0_u64, std::time::Instant::now()));
     crate::model::download_pinned_parts(
         &parts,
         target,
@@ -298,8 +379,12 @@ fn acquire_native_consumer(
         &identity.consumer.sha256,
         |done, total| {
             let gib = done / (1024 * 1024 * 1024);
-            if gib > announced.get() || done == total {
-                announced.set(gib);
+            let (last_gib, last_update) = announced.get();
+            if gib > last_gib
+                || done == total
+                || last_update.elapsed() >= std::time::Duration::from_secs(15)
+            {
+                announced.set((gib, std::time::Instant::now()));
                 ctx.progress.emit(
                     Step::Model,
                     Status::Info,
@@ -322,6 +407,16 @@ pub(super) fn verify_regular_file(
     expected: &str,
     label: &str,
 ) -> Result<()> {
+    verify_regular_file_with_progress(path, bytes, expected, label, |_, _| {})
+}
+
+fn verify_regular_file_with_progress(
+    path: &Path,
+    bytes: u64,
+    expected: &str,
+    label: &str,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<()> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("inspect {label} {}: {error}", path.display()))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -339,6 +434,7 @@ pub(super) fn verify_regular_file(
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
     let mut digest = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
+    let mut hashed = 0_u64;
     loop {
         let read = reader
             .read(&mut buffer)
@@ -347,6 +443,8 @@ pub(super) fn verify_regular_file(
             break;
         }
         digest.update(&buffer[..read]);
+        hashed = hashed.saturating_add(read as u64);
+        progress(hashed, bytes);
     }
     let actual = format!("{:x}", digest.finalize());
     if actual != expected {
@@ -355,6 +453,61 @@ pub(super) fn verify_regular_file(
         ));
     }
     Ok(())
+}
+
+/// A cheap, closed receipt for one already-completed content hash. Device,
+/// inode, mtime and ctime jointly catch replacement and in-place edits; ctime
+/// cannot be restored by an unprivileged caller after changing the bytes.
+/// The registry itself is private to the same account that runs Muser, so the
+/// boundary here is accidental/stale data rather than a hostile local owner.
+pub(super) fn consumer_validation_stamp(path: &Path, expected: &str) -> Result<String> {
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+    {
+        return Err("consumer validation digest is not lowercase SHA-256".into());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect validated consumer {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "validated consumer is not a regular file: {}",
+            path.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(format!(
+            "{CONSUMER_VALIDATION_SCHEMA}:{expected}:{}:{}:{}:{}:{}:{}:{}",
+            metadata.len(),
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let modified = metadata
+            .modified()
+            .map_err(|error| format!("read consumer modified time: {error}"))?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "consumer modified time predates Unix epoch".to_string())?;
+        Ok(format!(
+            "{CONSUMER_VALIDATION_SCHEMA}:{expected}:{}:0:0:{}:{}:0:0",
+            metadata.len(),
+            modified.as_secs(),
+            modified.subsec_nanos(),
+        ))
+    }
+}
+
+fn consumer_validation_is_current(recorded: Option<&str>, path: &Path, expected: &str) -> bool {
+    recorded.is_some() && consumer_validation_stamp(path, expected).ok().as_deref() == recorded
 }
 
 fn install(
@@ -438,4 +591,70 @@ fn install(
         &format!("{role}: installed and verified"),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consumer_validation_stamp_changes_on_replacement_and_digest_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "muser-consumer-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("consumer.gguf");
+        std::fs::write(&path, b"same-size-bytes").unwrap();
+        let digest = "a".repeat(64);
+        let original = consumer_validation_stamp(&path, &digest).unwrap();
+        assert_eq!(consumer_validation_stamp(&path, &digest).unwrap(), original);
+        assert_ne!(
+            consumer_validation_stamp(&path, &"b".repeat(64)).unwrap(),
+            original
+        );
+
+        let replacement = root.join("replacement.gguf");
+        std::fs::write(&replacement, b"same-size-bytes").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert_ne!(consumer_validation_stamp(&path, &digest).unwrap(), original);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prior_consumer_verification_is_reused_only_for_an_unchanged_file() {
+        let root = std::env::temp_dir().join(format!(
+            "muser-consumer-reuse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("decoder.gguf");
+        std::fs::write(&path, b"verified decoder").unwrap();
+        let digest = "a".repeat(64);
+        let stamp = consumer_validation_stamp(&path, &digest).unwrap();
+
+        assert!(consumer_validation_is_current(Some(&stamp), &path, &digest));
+        assert!(!consumer_validation_is_current(None, &path, &digest));
+        assert!(!consumer_validation_is_current(
+            Some(&stamp),
+            &path,
+            &"b".repeat(64)
+        ));
+
+        std::fs::write(&path, b"replaced decoder").unwrap();
+        assert!(!consumer_validation_is_current(
+            Some(&stamp),
+            &path,
+            &digest
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

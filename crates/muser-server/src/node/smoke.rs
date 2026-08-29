@@ -1,10 +1,10 @@
 //! Step 6 — a real prefill, and what the link actually did.
 //!
-//! The smoke test is not a ping: `muser-remote-qualify` runs the *production*
-//! receiver against the node, recomputes the same prefix locally, and
-//! refuses to print a passing sample unless the remote and local token
-//! streams are identical. Exactness is by construction, so this step only
-//! has to establish that a sample was produced and read its numbers.
+//! The default smoke is not a ping: `muser-remote-qualify` runs the production
+//! receiver against the node, authenticates and installs real target KV, and
+//! decodes a bounded continuation on Metal. The separate full qualification
+//! recomputes the prefix locally and compares three 256-token continuations;
+//! it remains available without making every first-time user wait for it.
 //!
 //! It runs under `scripts/accelerator_safe.py`, which owns the machine-wide
 //! GPU lease. A node onboarding therefore queues behind whatever else holds
@@ -24,10 +24,10 @@ use super::{Ctx, Result};
 
 /// The prefill this step proves, in positions.
 pub const SMOKE_PROMPT_TOKENS: usize = 2048;
-/// Decoded after the install, enough to compare a real token stream.
-// The qualify executor enforces its blessed protocol (exactly 3 repetitions,
-// 256 output tokens); the smoke runs that protocol rather than a lighter one
-// so the button's final step is literally a production qualification cell.
+/// Bounded decode used by the operational setup gate.
+const OPERATIONAL_OUTPUT_TOKENS: usize = 8;
+/// Full evidence geometry. The qualifier enforces exactly 3 repetitions and
+/// 256 output tokens for the enrolled native identity.
 const SMOKE_OUTPUT_TOKENS: usize = 256;
 const SMOKE_REPETITIONS: usize = 3;
 /// Hard minimum median effective installed-payload throughput.
@@ -53,7 +53,161 @@ fn recipe_progress(recipe: QualificationRecipe) -> String {
     }
 }
 
+/// Fast default for the shipped native lane. The explicitly selected kquant
+/// research lane keeps its full target+DFlash qualification because it has no
+/// separate operational-probe contract.
 pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
+    if entry.producer_kind() != super::registry::ProducerKind::Native {
+        return qualify(ctx, entry);
+    }
+    operational_probe(ctx, entry)
+}
+
+fn operational_probe(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
+    let ssh = ctx.ssh(entry)?;
+    let local = node_dir(&ctx.muser_home, &entry.name);
+    let cluster = super::enroll::cluster_config(&ctx.muser_home, &entry.name);
+    let fixture = ctx
+        .prompt_fixture
+        .clone()
+        .unwrap_or_else(|| local.join("smoke-2048.tokens"));
+    let native = ctx.native_identity()?;
+    let model = ctx.model_dir()?.join(&native.consumer.filename);
+    let identity = format!(
+        "node-{}-probe-{}",
+        entry.name,
+        crate::timefmt::now_rfc3339().replace([':', '-'], "")
+    );
+    let argv = operational_probe_argv(ctx, entry, &model, &fixture, &cluster, &local, &identity);
+
+    ctx.progress.emit(
+        Step::Netqual,
+        Status::Start,
+        &format!("measuring the link to {}", entry.host),
+    );
+    ctx.progress.emit(
+        Step::Smoke,
+        Status::Start,
+        &format!(
+            "running one authenticated {SMOKE_PROMPT_TOKENS}/{OPERATIONAL_OUTPUT_TOKENS} operational handoff"
+        ),
+    );
+    if ctx.dry_run {
+        ctx.progress.plan(
+            Step::Netqual,
+            &format!(
+                "time {RTT_SAMPLES} TCP connects to {}:{DAEMON_PORT} and take the median",
+                entry.host
+            ),
+        );
+        ctx.progress.plan(
+            Step::Smoke,
+            &format!(
+                "write the pinned {SMOKE_PROMPT_TOKENS}-position native fixture to {}",
+                fixture.display()
+            ),
+        );
+        ctx.progress.plan_command(
+            Step::Smoke,
+            &format!("probe {} against {}", entry.name, cluster.display()),
+            &argv,
+        );
+        ctx.progress.plan(
+            Step::Smoke,
+            "authenticate and atomically install target KV, then decode 8 tokens on Metal",
+        );
+        ctx.progress.plan(
+            Step::Smoke,
+            "leave the three-repetition local-reference comparison to `muser node qualify`",
+        );
+        return Ok(());
+    }
+
+    ensure_metal_qualifier(ctx)?;
+    let mut rtts = Vec::with_capacity(RTT_SAMPLES);
+    for _ in 0..RTT_SAMPLES {
+        rtts.push(millis(ssh.tcp_probe(DAEMON_PORT, PROBE_TIMEOUT)?));
+    }
+    rtts.sort_by(f64::total_cmp);
+    let rtt_ms = rtts[rtts.len() / 2];
+    ctx.progress.emit_data(
+        Step::Netqual,
+        Status::Info,
+        &format!("median TCP RTT {rtt_ms:.2} ms over {RTT_SAMPLES} connects"),
+        serde_json::json!({ "netqual_rtt_ms": rtt_ms, "samples": rtts }),
+    );
+
+    if ctx.prompt_fixture.is_none()
+        && ensure_default_fixture(&fixture, QualificationRecipe::NativeText)?
+    {
+        ctx.progress.emit(
+            Step::Smoke,
+            Status::Info,
+            &format!(
+                "wrote the native/text {SMOKE_PROMPT_TOKENS}-position fixture to {}",
+                fixture.display()
+            ),
+        );
+    }
+    if !model.is_file() {
+        return Err(format!(
+            "{} is absent; the operational handoff needs the native Mac decoder",
+            model.display()
+        ));
+    }
+    let fixture_bytes = std::fs::read(&fixture)
+        .map_err(|error| format!("read native operational fixture: {error}"))?;
+    let fixture_digest = format!("{:x}", Sha256::digest(&fixture_bytes));
+    if fixture_digest != native.qualification.prompt_sha256 {
+        return Err(format!(
+            "native operational fixture SHA-256 mismatch: expected {}, got {fixture_digest}",
+            native.qualification.prompt_sha256
+        ));
+    }
+    let metallib = ctx.pinned_metallib()?;
+    let command_log = execute_qualifier(ctx, &local, &identity, &argv, &metallib, true)?;
+    let sample = parse_operational_probe(&command_log, &identity)?;
+    let gbps = sample.producer_payload_gbps;
+    if gbps < EXPECTED_GBPS {
+        return Err(format!(
+            "installed-payload throughput {gbps:.2} Gbps is below the required {EXPECTED_GBPS:.1} Gbps minimum"
+        ));
+    }
+    ctx.progress.emit_data(
+        Step::Smoke,
+        Status::Info,
+        &format!(
+            "authenticated KV installed; first token in {:.1} ms; {}-token decode verified",
+            sample.remote_ttft_ns as f64 / 1e6,
+            sample.output_tokens
+        ),
+        serde_json::json!({
+            "installed_bytes": sample.installed_bytes,
+            "installed_segments": sample.installed_segments,
+            "output_tokens": sample.output_tokens,
+            "remote_ttft_ns": sample.remote_ttft_ns,
+            "authenticated_handoff": true,
+            "reference_comparison": null,
+        }),
+    );
+    ctx.progress.emit_data(
+        Step::Netqual,
+        Status::Ok,
+        &format!("{gbps:.2} Gbps, {rtt_ms:.2} ms median RTT"),
+        serde_json::json!({
+            "netqual_gbps": gbps,
+            "active_drain_gbps": sample.active_drain_gbps,
+            "netqual_rtt_ms": rtt_ms,
+        }),
+    );
+    entry.netqual_gbps = Some(gbps);
+    entry.netqual_rtt_ms = Some(rtt_ms);
+    Ok(())
+}
+
+/// Publication-grade per-node qualification, kept off the blocking setup
+/// path. This is the former `node add` terminal gate.
+pub fn qualify(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     let ssh = ctx.ssh(entry)?;
     let local = node_dir(&ctx.muser_home, &entry.name);
     let cluster = super::enroll::cluster_config(&ctx.muser_home, &entry.name);
@@ -212,65 +366,14 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
         }
     }
     let metallib = ctx.pinned_metallib()?;
-
-    // One-button semantics: a busy machine is waited out, not handed to the
-    // user as an errand. ~2 minutes of patience covers a dashboard's model
-    // server being stopped or a short benchmark cell draining.
-    const BUSY_RETRIES: usize = 12;
-    const BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-    let mut output = None;
-    for attempt in 0..=BUSY_RETRIES {
-        let receipt_path = local
-            .join("smoke")
-            .join(format!("{identity}-attempt-{attempt}.result.json"));
-        let attempt_argv = with_result_receipt(&argv, &receipt_path)?;
-        let mut command = Command::new(&attempt_argv[0]);
-        command
-            .args(&attempt_argv[1..])
-            .env("MUSER_GGML_METALLIB", &metallib)
-            .env("MUSER_CROSS_VENDOR_QK", "1");
-        if native_identity.is_some() {
-            command.env(
-                "MUSER_CROSS_VENDOR_ROPE_CACHE",
-                local.join("native-rope-cache-f32le.bin"),
-            );
-        }
-        let candidate = command
-            .output()
-            .map_err(|error| format!("spawn {}: {error}", attempt_argv[0]))?;
-        let retained = read_accelerator_result(&receipt_path, &attempt_argv)?;
-        let command_log = std::fs::read_to_string(&retained.command_log)
-            .map_err(|error| format!("read {}: {error}", retained.command_log.display()))?;
-        let busy = retained.exit_status != 0 && busy_class(&command_log).is_some();
-        if busy && attempt < BUSY_RETRIES {
-            ctx.progress.emit(
-                Step::Smoke,
-                Status::Info,
-                &format!(
-                    "the GPU is busy; waiting {}s and retrying ({}/{BUSY_RETRIES})",
-                    BUSY_WAIT.as_secs(),
-                    attempt + 1
-                ),
-            );
-            std::thread::sleep(BUSY_WAIT);
-            continue;
-        }
-        output = Some((candidate, retained, command_log));
-        break;
-    }
-    let (output, retained, command_log) = output.expect("loop always assigns before break");
-    if output.status.code() != Some(retained.exit_status) {
-        return Err("accelerator wrapper exit differs from its retained receipt".into());
-    }
-    if retained.exit_status != 0 {
-        let detail = command_log
-            .lines()
-            .rev()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" | ");
-        return Err(format!("remote qualification failed: {detail}"));
-    }
+    let command_log = execute_qualifier(
+        ctx,
+        &local,
+        &identity,
+        &argv,
+        &metallib,
+        native_identity.is_some(),
+    )?;
     let samples = parse_samples(
         &command_log,
         &identity,
@@ -280,7 +383,7 @@ pub fn run(ctx: &Ctx, entry: &mut NodeEntry) -> Result<()> {
     let sample = &samples[0];
     ctx.progress.emit_data(
         Step::Smoke,
-        Status::Ok,
+        Status::Info,
         &format!(
             "exact tokens over {} installed bytes in {:.1} ms",
             sample.installed_bytes,
@@ -329,6 +432,98 @@ struct SmokeSample {
     payload_wire_ns: u64,
 }
 
+struct OperationalSample {
+    installed_bytes: u64,
+    installed_segments: u64,
+    output_tokens: u64,
+    remote_ttft_ns: u64,
+    active_drain_gbps: f64,
+    producer_payload_gbps: f64,
+}
+
+fn parse_operational_probe(stdout: &str, identity: &str) -> Result<OperationalSample> {
+    let mut sample = None;
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("schema").and_then(serde_json::Value::as_str)
+            != Some("muser.remote-qualify.v1")
+            || value.get("kind").and_then(serde_json::Value::as_str) != Some("operational-probe")
+        {
+            continue;
+        }
+        if sample.is_some() {
+            return Err("operational handoff printed duplicate samples".into());
+        }
+        let u64_field = |name: &str| {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let installed_bytes = u64_field("installed_bytes");
+        let installed_segments = u64_field("installed_segments");
+        let output_tokens = u64_field("output_tokens");
+        let remote_ttft_ns = u64_field("remote_ttft_ns");
+        let active_drain_gbps = value
+            .get("active_drain_gbps")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let producer_payload_gbps = value
+            .get("producer_payload_gbps")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        if value.get("identity").and_then(serde_json::Value::as_str) != Some(identity)
+            || value.get("variant").and_then(serde_json::Value::as_str) != Some(VARIANT_TEXT)
+            || u64_field("prompt_positions") != SMOKE_PROMPT_TOKENS as u64
+            || output_tokens != OPERATIONAL_OUTPUT_TOKENS as u64
+            || value
+                .get("authenticated_handoff")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || value
+                .get("target_installed")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || !value
+                .get("reference_comparison")
+                .is_some_and(serde_json::Value::is_null)
+            || value
+                .get("seal_eligible")
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
+            || value
+                .get("generated_tokens_sha256")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|digest| {
+                    digest.len() != 64
+                        || !digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            || installed_bytes == 0
+            || installed_segments == 0
+            || remote_ttft_ns == 0
+            || !active_drain_gbps.is_finite()
+            || active_drain_gbps <= 0.0
+            || !producer_payload_gbps.is_finite()
+            || producer_payload_gbps <= 0.0
+        {
+            return Err("operational handoff sample is incomplete or has mixed geometry".into());
+        }
+        sample = Some(OperationalSample {
+            installed_bytes,
+            installed_segments,
+            output_tokens,
+            remote_ttft_ns,
+            active_drain_gbps,
+            producer_payload_gbps,
+        });
+    }
+    sample.ok_or_else(|| "operational handoff printed no sample".into())
+}
+
 /// Bytes x 8 bits over nanoseconds is already gigabits per second.
 fn installed_payload_gbps(sample: &SmokeSample) -> f64 {
     sample.installed_bytes as f64 * 8.0 / sample.payload_wire_ns as f64
@@ -340,6 +535,74 @@ fn installed_payload_gbps(sample: &SmokeSample) -> f64 {
 /// rather than a real fault?
 fn busy_class(text: &str) -> Option<()> {
     (text.contains("another GPU process") || text.contains("accelerator lease")).then_some(())
+}
+
+fn execute_qualifier(
+    ctx: &Ctx,
+    local: &Path,
+    identity: &str,
+    argv: &[String],
+    metallib: &Path,
+    native: bool,
+) -> Result<String> {
+    // One-button semantics: a busy machine is waited out, not handed to the
+    // user as an errand. ~2 minutes covers a dashboard model server draining.
+    const BUSY_RETRIES: usize = 12;
+    const BUSY_WAIT: Duration = Duration::from_secs(10);
+    let mut output = None;
+    for attempt in 0..=BUSY_RETRIES {
+        let receipt_path = local
+            .join("smoke")
+            .join(format!("{identity}-attempt-{attempt}.result.json"));
+        let attempt_argv = with_result_receipt(argv, &receipt_path)?;
+        let mut command = Command::new(&attempt_argv[0]);
+        command
+            .args(&attempt_argv[1..])
+            .env("MUSER_GGML_METALLIB", metallib)
+            .env("MUSER_CROSS_VENDOR_QK", "1");
+        if native {
+            command.env(
+                "MUSER_CROSS_VENDOR_ROPE_CACHE",
+                local.join("native-rope-cache-f32le.bin"),
+            );
+        }
+        let candidate = command
+            .output()
+            .map_err(|error| format!("spawn {}: {error}", attempt_argv[0]))?;
+        let retained = read_accelerator_result(&receipt_path, &attempt_argv)?;
+        let command_log = std::fs::read_to_string(&retained.command_log)
+            .map_err(|error| format!("read {}: {error}", retained.command_log.display()))?;
+        let busy = retained.exit_status != 0 && busy_class(&command_log).is_some();
+        if busy && attempt < BUSY_RETRIES {
+            ctx.progress.emit(
+                Step::Smoke,
+                Status::Info,
+                &format!(
+                    "the GPU is busy; waiting {}s and retrying ({}/{BUSY_RETRIES})",
+                    BUSY_WAIT.as_secs(),
+                    attempt + 1
+                ),
+            );
+            std::thread::sleep(BUSY_WAIT);
+            continue;
+        }
+        output = Some((candidate, retained, command_log));
+        break;
+    }
+    let (output, retained, command_log) = output.expect("loop always assigns before break");
+    if output.status.code() != Some(retained.exit_status) {
+        return Err("accelerator wrapper exit differs from its retained receipt".into());
+    }
+    if retained.exit_status != 0 {
+        let detail = command_log
+            .lines()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(format!("remote handoff check failed: {detail}"));
+    }
+    Ok(command_log)
 }
 
 #[derive(serde::Deserialize)]
@@ -614,17 +877,21 @@ fn ensure_default_fixture(path: &Path, recipe: QualificationRecipe) -> Result<bo
     Ok(true)
 }
 
-/// A workspace-wide `cargo build --release` does not activate package-local
-/// features on `muser-bench`, even though the server itself enables Metal.
-/// Build the exact executor the onboarding gate needs before taking the GPU
-/// lease, so a clean clone cannot discover the feature mismatch at runtime.
+/// Release bundles place the Metal qualifier beside `muser`; a source build
+/// may place it under `target/release`. Never ask Cargo to rebuild an already
+/// present companion during onboarding. Besides wasting time, that made the
+/// product path depend on a compiler and on the caller's Cargo configuration.
+/// A source clone missing the companion still gets the exact targeted build.
 fn ensure_metal_qualifier(ctx: &Ctx) -> Result<()> {
     let binary = ctx.qualify_binary();
+    if binary.is_file() {
+        return Ok(());
+    }
     if std::env::var_os("MUSER_REMOTE_QUALIFY").is_some() {
-        return binary
-            .is_file()
-            .then_some(())
-            .ok_or_else(|| format!("MUSER_REMOTE_QUALIFY is not a file: {}", binary.display()));
+        return Err(format!(
+            "MUSER_REMOTE_QUALIFY is not a file: {}",
+            binary.display()
+        ));
     }
     if !cfg!(target_os = "macos") {
         return Err("node qualification requires macOS Metal on the consumer".into());
@@ -663,6 +930,56 @@ fn ensure_metal_qualifier(ctx: &Ctx) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn operational_probe_argv(
+    ctx: &Ctx,
+    entry: &NodeEntry,
+    model: &Path,
+    fixture: &Path,
+    cluster: &Path,
+    local: &Path,
+    identity: &str,
+) -> Vec<String> {
+    let mut argv = vec![
+        "python3".into(),
+        ctx.repo_root
+            .join("scripts/accelerator_safe.py")
+            .display()
+            .to_string(),
+        "--execute".into(),
+        "--identity".into(),
+        identity.into(),
+        "--cell".into(),
+        format!("node-smoke-{}", entry.name),
+        "--out-dir".into(),
+        local.join("smoke").display().to_string(),
+        "--operational".into(),
+        "--quiet-seconds".into(),
+        "0".into(),
+        "--".into(),
+        ctx.qualify_binary().display().to_string(),
+        "--model".into(),
+        model.display().to_string(),
+        "--prompt-token-fixture".into(),
+        fixture.display().to_string(),
+        "--cluster-config".into(),
+        cluster.display().to_string(),
+        "--variant".into(),
+        VARIANT_TEXT.into(),
+        "--repetitions".into(),
+        "1".into(),
+        "--output-tokens".into(),
+        OPERATIONAL_OUTPUT_TOKENS.to_string(),
+        "--identity".into(),
+        identity.into(),
+        "--operational-probe".into(),
+    ];
+    if ctx.dry_run {
+        argv.push("--dry-run".into());
+    }
+    argv
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -747,6 +1064,7 @@ mod tests {
             model_source_base: None,
             prompt_fixture: None,
             lane_dir_override: None,
+            verified_native_consumer: std::sync::Mutex::new(None),
         }
     }
 
@@ -1006,6 +1324,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(samples.len(), SMOKE_REPETITIONS);
+    }
+
+    #[test]
+    fn the_native_operational_probe_is_one_bounded_handoff() {
+        let entry = NodeEntry {
+            producer: Some(ProducerKind::Native),
+            ..NodeEntry::draft("gx10", "muser", "gx10.local", Path::new("/tmp"), None)
+        };
+        let argv = operational_probe_argv(
+            &test_ctx(),
+            &entry,
+            Path::new("/models/native.gguf"),
+            Path::new("/fixture.tokens"),
+            Path::new("/cluster.json"),
+            Path::new("/local"),
+            "node-gx10-probe",
+        );
+        let value_after = |flag: &str| {
+            argv.windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].clone())
+        };
+        assert!(argv
+            .iter()
+            .any(|argument| argument == "--operational-probe"));
+        assert!(argv.iter().any(|argument| argument == "--operational"));
+        assert_eq!(value_after("--quiet-seconds").as_deref(), Some("0"));
+        assert_eq!(value_after("--variant").as_deref(), Some("text"));
+        assert_eq!(value_after("--repetitions").as_deref(), Some("1"));
+        assert_eq!(value_after("--output-tokens").as_deref(), Some("8"));
+        for full_only in ["--onboarding-native", "--drift-graded", "--reference-once"] {
+            assert!(!argv.iter().any(|argument| argument == full_only));
+        }
+
+        let line = serde_json::json!({
+            "schema": "muser.remote-qualify.v1",
+            "kind": "operational-probe",
+            "identity": "node-gx10-probe",
+            "variant": "text",
+            "prompt_positions": 2048,
+            "output_tokens": 8,
+            "remote_ttft_ns": 1_700_000_000_u64,
+            "installed_bytes": 108_998_656_u64,
+            "installed_segments": 16,
+            "active_drain_gbps": 8.7,
+            "producer_payload_gbps": 6.9,
+            "generated_tokens_sha256": "a".repeat(64),
+            "authenticated_handoff": true,
+            "target_installed": true,
+            "reference_comparison": null,
+            "seal_eligible": false,
+        })
+        .to_string();
+        let sample = parse_operational_probe(&line, "node-gx10-probe").unwrap();
+        assert_eq!(sample.output_tokens, 8);
+        assert_eq!(sample.producer_payload_gbps, 6.9);
+
+        let dishonest = line.replace(
+            "\"reference_comparison\":null",
+            "\"reference_comparison\":true",
+        );
+        assert!(parse_operational_probe(&dishonest, "node-gx10-probe").is_err());
     }
 
     /// A lane and its evidence must agree: DFlash evidence on the text lane

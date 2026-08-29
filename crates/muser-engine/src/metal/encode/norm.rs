@@ -22,6 +22,51 @@ struct GgmlMetalKargsNorm {
 
 impl MetalKernels {
     #[allow(clippy::too_many_arguments)]
+    fn encode_cross_vendor_fused_norm_residual_rms_norm_batch_dual_eps(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        hidden: &GpuBuffer,
+        source: &GpuBuffer,
+        output: &GpuBuffer,
+        first_weight: &GpuBuffer,
+        second_weight: &GpuBuffer,
+        dim: usize,
+        first_eps: f32,
+        second_eps: f32,
+        rows: usize,
+    ) {
+        self.encode_cross_vendor_rms_then_weight(
+            encoder,
+            source,
+            first_weight,
+            output,
+            rows,
+            dim,
+            first_eps,
+        );
+        let post_norm_barrier: [&metal::ResourceRef; 1] = [output.metal()];
+        encoder.memory_barrier_with_resources(&post_norm_barrier);
+
+        encoder.set_compute_pipeline_state(&self.cross_vendor_residual_add);
+        encoder.set_buffer(0, Some(hidden.metal()), 0);
+        encoder.set_buffer(1, Some(output.metal()), 0);
+        set_value(encoder, 2, &((dim * rows) as u32));
+        super::dispatch_1d(encoder, dim * rows);
+        let residual_barrier: [&metal::ResourceRef; 1] = [hidden.metal()];
+        encoder.memory_barrier_with_resources(&residual_barrier);
+
+        self.encode_cross_vendor_rms_then_weight(
+            encoder,
+            hidden,
+            second_weight,
+            output,
+            rows,
+            dim,
+            second_eps,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn encode_cross_vendor_rms_then_weight(
         &self,
         encoder: &ComputeCommandEncoderRef,
@@ -113,34 +158,17 @@ impl MetalKernels {
         debug_assert_eq!(first_weight.len(), dim);
         debug_assert_eq!(second_weight.len(), dim);
         if std::env::var_os("MUSER_CROSS_VENDOR_QK").is_some() {
-            self.encode_cross_vendor_rms_then_weight(
-                encoder,
-                source,
-                first_weight,
-                output,
-                rows,
-                dim,
-                first_eps,
-            );
-            let post_norm_barrier: [&metal::ResourceRef; 1] = [output.metal()];
-            encoder.memory_barrier_with_resources(&post_norm_barrier);
-
-            encoder.set_compute_pipeline_state(&self.cross_vendor_residual_add);
-            encoder.set_buffer(0, Some(hidden.metal()), 0);
-            encoder.set_buffer(1, Some(output.metal()), 0);
-            set_value(encoder, 2, &((dim * rows) as u32));
-            super::dispatch_1d(encoder, dim * rows);
-            let residual_barrier: [&metal::ResourceRef; 1] = [hidden.metal()];
-            encoder.memory_barrier_with_resources(&residual_barrier);
-
-            self.encode_cross_vendor_rms_then_weight(
+            self.encode_cross_vendor_fused_norm_residual_rms_norm_batch_dual_eps(
                 encoder,
                 hidden,
-                second_weight,
+                source,
                 output,
-                rows,
+                first_weight,
+                second_weight,
                 dim,
+                first_eps,
                 second_eps,
+                rows,
             );
             return;
         }
@@ -538,10 +566,9 @@ mod tests {
         let output = GpuBuffer::zeros(&context, rows * dim).unwrap();
         let first_weight = GpuBuffer::from_f32(&context, &first_weight).unwrap();
         let second_weight = GpuBuffer::from_f32(&context, &second_weight).unwrap();
-        unsafe { std::env::set_var("MUSER_CROSS_VENDOR_QK", "1") };
         let command = context.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
-        kernels.encode_fused_norm_residual_rms_norm_32sg_batch(
+        kernels.encode_cross_vendor_fused_norm_residual_rms_norm_batch_dual_eps(
             encoder,
             &hidden,
             &source,
@@ -558,7 +585,6 @@ mod tests {
         context
             .wait_for_completion(command, Duration::from_secs(30))
             .expect("strict dual-norm completion");
-        unsafe { std::env::remove_var("MUSER_CROSS_VENDOR_QK") };
 
         for (index, (&actual, &expected)) in
             hidden.as_slice().iter().zip(&expected_hidden).enumerate()
