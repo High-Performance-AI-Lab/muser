@@ -1,0 +1,3 @@
+interface:
+  display_name: "Muser Release Up"
+  short_description: "Stand up the released Muser NVFP4 topology"

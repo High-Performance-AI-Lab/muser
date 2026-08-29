@@ -1,6 +1,6 @@
 ---
 name: muser-disagg-onboard
-description: Enroll, qualify, serve through, diagnose, and safely recover a Muser disaggregated prefill node. Use for `muser node add`, the dashboard Add node wizard, native or combined handoff qualification, remote prefill, GX10 diagnostics, producer restoration, and node health evidence.
+description: Qualify, deeply diagnose, and safely recover a Muser disaggregated prefill node after ordinary release startup. Use for explicit `muser node qualify`, enrollment repair, native or combined handoff qualification, GX10 diagnostics, producer restoration, and node health evidence. For the normal dashboard Add node and released NVFP4 first run, use `muser-release-up`.
 ---
 
 # Onboard a disaggregated prefill node
@@ -9,6 +9,11 @@ Work from the repository root. Read `AGENTS.md`,
 `docs/one-button-onboarding.md`, and `scripts/gx10/README.md` before touching a
 node. Use the topology and resident identity supplied by the operator; do not
 infer them from historical receipts.
+
+This is the maintainer qualification and recovery path, not the ordinary
+one-button install. The shipped default is the native NVFP4 lane. Do not set
+`MUSER_CROSS_VENDOR_QK` or select the kquant/llama.cpp research lane unless
+the task explicitly calls for that experiment.
 
 ## Enforce the boundaries first
 
@@ -89,13 +94,13 @@ The six executable stages produce seven progress labels:
 5. `daemon`: the single remote producer starts and listens.
 6. `smoke`: emits `netqual`, then runs the lane-derived exactness recipe.
 
-Native/text qualification requires three ordered exact text handoffs.
-Combined qualification requires three ordered exact target-plus-DFlash
-handoffs. The progress text must name the chosen recipe. For every sample,
-retain the identity, installed bytes/segments, timing, target-token and
-required-logit exactness, plus DFlash-token exactness for the combined lane.
-The node may transition to `healthy` only after all three samples and the
-throughput gate pass.
+The release enrollment smoke gate performs one production-path operational
+handoff before publishing a healthy node. The explicit maintainer command
+`muser node qualify <name>` performs the full three-repetition qualification.
+For every qualification sample, retain the identity, installed bytes and
+segments, timing, target-token and required-logit exactness, plus DFlash-token
+exactness for an explicitly requested combined research lane. The node may
+transition to `healthy` only after its selected gate passes.
 
 Verify remembered and live state independently:
 
@@ -107,23 +112,18 @@ Require the enrolled node to report remembered `state: "healthy"`, a live
 daemon, a measured qualification rate at or above the configured gate, and no
 `last_error`. A zero exit or listening socket alone is insufficient.
 
-## Serve through the enrolled node
+## Start through the enrolled node
 
-Use the enrolled cluster config without reading the sibling PKI directory:
+Use the released selector rather than reconstructing a private cluster config
+or model command:
 
 ```sh
-MUSER_CROSS_VENDOR_QK=1 \
-MUSER_GGML_METALLIB=/absolute/path/to/llama.metallib \
-  ./target/release/muser serve \
-  --model "${MUSER_HOME:-$HOME/.muser}/models/muse-glimmer-30B-kquant-17gb.gguf" \
-  --prefill remote \
-  --cluster-config "${MUSER_HOME:-$HOME/.muser}/nodes/<name>/cluster.json"
+./target/release/muser up --node <name> --no-open
 ```
 
-`MUSER_CROSS_VENDOR_QK` must be exactly `1`; `remote` and `auto` fail closed
-otherwise. Do not add local `--dflash` for a native enrollment. Prove remote
-use with a new `/snapshot` transfer, increased disaggregated-prefill and
-installed-byte counters, and no new receive failure, fallback, or last error.
+Prove remote use with a real completion, a new `/snapshot` transfer, increased
+disaggregated-prefill and installed-byte counters, and no new receive failure,
+fallback, or last error. Do not add local DFlash to a native enrollment.
 
 ## Diagnose before changing code
 

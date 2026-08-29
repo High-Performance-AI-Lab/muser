@@ -1,9 +1,9 @@
 ---
 name: muser-local-up
-description: Build, start, and verify Muser locally on Apple Silicon or the CPU correctness path. Use when asked to install Muser, acquire the pinned model, run `muser up` or `muser serve`, enable local DFlash, or diagnose local startup and HTTP health without weakening artifact, metallib, bind, or API gates.
+description: Build, start, and verify Muser's explicit Mac-only local lane on Apple Silicon or the CPU correctness path. Use for `muser up --local`, an explicit local `muser serve`, local DFlash research, or local Metal and HTTP diagnosis without weakening artifact, metallib, bind, or API gates. Do not use for the shipped Mac + GX10 NVFP4 startup; use `muser-release-up` instead.
 ---
 
-# Run Muser locally
+# Run Muser's explicit local lane
 
 Work from the repository root. Read `AGENTS.md`, then
 `docs/quickstart.md`. Treat `docs/release-artifacts.json` as the model trust
@@ -62,13 +62,14 @@ llama.cpp revision.
 
 ## Acquire and run
 
-`muser up` is the smallest local path. It resolves the manifest-pinned Hugging
+`muser up --local` is the smallest explicit local path. It resolves the
+manifest-pinned Hugging
 Face repository and filename, streams into `$MUSER_HOME/models` (default
 `~/.muser/models`), verifies byte size and SHA-256, then serves:
 
 ```sh
 MUSER_GGML_METALLIB=/absolute/path/to/llama.metallib \
-  ./target/release/muser up --no-open
+  ./target/release/muser up --local --no-open
 ```
 
 Hugging Face is transport, never identity. Do not bypass a repository,

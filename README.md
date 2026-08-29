@@ -235,6 +235,20 @@ identity. `--no-default-features` gives a CPU-only correctness path. Anything
 touching the GPU in this repo's lab runs through
 `scripts/accelerator_safe.py` (dry-run by default, `--execute` to run).
 
+## Repository skills
+
+Operational assistants can use the checked-in skills instead of reconstructing
+startup commands from issue history:
+
+- [`muser-release-up`](skills/muser-release-up/SKILL.md) — install, onboard a
+  GX10, start the shipped NVFP4 topology, and prove the first prompt;
+- [`muser-local-up`](skills/muser-local-up/SKILL.md) — run the explicit
+  Mac-only local/research lane;
+- [`muser-disagg-onboard`](skills/muser-disagg-onboard/SKILL.md) — qualify,
+  diagnose, or recover a remote prefill node; and
+- [`muser-bench-ladder`](skills/muser-bench-ladder/SKILL.md) — collect
+  controlled benchmark evidence.
+
 ## Documentation
 
 | Doc | What it covers |
