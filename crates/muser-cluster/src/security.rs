@@ -193,6 +193,109 @@ pub fn accept_mtls_with_alpn(
     Ok(stream)
 }
 
+/// RDMA counterparts of [`connect_mtls_with_alpn`]/[`accept_mtls_with_alpn`].
+/// Same TLS config, verification, and ALPN/leaf-pin logic — only the byte
+/// transport underneath `StreamOwned` changes, from `TcpStream` to
+/// [`crate::melon_rdma::MelonRdmaStream`]. `bootstrap` is an already
+/// TCP-connected socket used only to exchange RDMA QP parameters before the
+/// connection switches to RDMA SEND/RECV for everything after, including
+/// the TLS handshake itself — the same bootstrap-then-upgrade pattern
+/// MelonDMA's own `ggml-rpc/transport.cpp` uses.
+#[cfg(feature = "melon-rdma")]
+pub mod rdma {
+    use super::*;
+    use crate::melon_rdma::MelonRdmaStream;
+    use std::net::TcpStream;
+    use std::os::fd::IntoRawFd;
+
+    pub type ClientTlsStreamRdma = StreamOwned<ClientConnection, MelonRdmaStream>;
+    pub type ServerTlsStreamRdma = StreamOwned<ServerConnection, MelonRdmaStream>;
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_mtls_over_rdma(
+        bootstrap: TcpStream,
+        server_name: &str,
+        files: TlsFiles<'_>,
+        alpn: &[u8],
+        rdma_dev: &str,
+        rdma_gid_index: i32,
+    ) -> Result<ClientTlsStreamRdma, SecurityError> {
+        validate_alpn(alpn)?;
+        validate_pins(files.leaf_sha256_pins)?;
+        let roots = load_roots(files.peer_ca)?;
+        let certificates = load_certificates(files.certificate_chain)?;
+        let key = load_private_key(files.private_key)?;
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut config = ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|error| SecurityError::Config(error.to_string()))?
+            .with_root_certificates(roots)
+            .with_client_auth_cert(certificates, key)
+            .map_err(|error| SecurityError::Config(error.to_string()))?;
+        config.alpn_protocols = vec![alpn.to_vec()];
+        let name = ServerName::try_from(server_name.to_owned())
+            .map_err(|error| SecurityError::Config(format!("invalid server name: {error}")))?;
+        let connection = ClientConnection::new(Arc::new(config), name)?;
+
+        let fd = bootstrap.into_raw_fd();
+        let rdma = MelonRdmaStream::open(fd, rdma_dev, rdma_gid_index)?;
+
+        let mut stream = StreamOwned::new(connection, rdma);
+        while stream.conn.is_handshaking() {
+            stream.conn.complete_io(&mut stream.sock)?;
+        }
+        verify_connection(
+            stream.conn.alpn_protocol(),
+            stream.conn.peer_certificates(),
+            files.leaf_sha256_pins,
+            alpn,
+        )?;
+        Ok(stream)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_mtls_over_rdma(
+        bootstrap: TcpStream,
+        files: TlsFiles<'_>,
+        alpn: &[u8],
+        rdma_dev: &str,
+        rdma_gid_index: i32,
+    ) -> Result<ServerTlsStreamRdma, SecurityError> {
+        validate_alpn(alpn)?;
+        validate_pins(files.leaf_sha256_pins)?;
+        let roots = Arc::new(load_roots(files.peer_ca)?);
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = WebPkiClientVerifier::builder_with_provider(roots, Arc::clone(&provider))
+            .build()
+            .map_err(|error| SecurityError::Config(error.to_string()))?;
+        let certificates = load_certificates(files.certificate_chain)?;
+        let key = load_private_key(files.private_key)?;
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|error| SecurityError::Config(error.to_string()))?
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(certificates, key)
+            .map_err(|error| SecurityError::Config(error.to_string()))?;
+        config.alpn_protocols = vec![alpn.to_vec()];
+        let connection = ServerConnection::new(Arc::new(config))?;
+
+        let fd = bootstrap.into_raw_fd();
+        let rdma = MelonRdmaStream::open(fd, rdma_dev, rdma_gid_index)?;
+
+        let mut stream = StreamOwned::new(connection, rdma);
+        while stream.conn.is_handshaking() {
+            stream.conn.complete_io(&mut stream.sock)?;
+        }
+        verify_connection(
+            stream.conn.alpn_protocol(),
+            stream.conn.peer_certificates(),
+            files.leaf_sha256_pins,
+            alpn,
+        )?;
+        Ok(stream)
+    }
+}
+
 fn verify_connection(
     alpn: Option<&[u8]>,
     peer: Option<&[CertificateDer<'_>]>,

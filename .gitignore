@@ -39,3 +39,8 @@ kvpack-artifacts/
 /logs/
 __pycache__/
 *.py[cod]
+
+# melon-rdma feature build artifacts (compiled per-platform, never committed)
+native/melon_rdma/*.so
+native/melon_rdma/*.dylib
+scripts/gx10/llamacpp/libmelon_rdma_pipe.so
