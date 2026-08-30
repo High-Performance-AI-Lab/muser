@@ -343,6 +343,60 @@ def connect_tls(args: argparse.Namespace) -> ssl.SSLSocket:
     return stream
 
 
+def connect_rdma_tls(args: argparse.Namespace):
+    """RDMA counterpart of `connect_tls()`: identical TLS 1.3 config,
+    identical ALPN/leaf-pin verification, but ciphertext moves over
+    MelonDMA's RDMA transport (see `melon_rdma_stream.py`) instead of a
+    plain TCP socket. Returns a `MelonRdmaTlsStream`, which exposes the same
+    `.recv()`/`.sendall()`/`.getpeercert()`/`.selected_alpn_protocol()`
+    /`.shutdown()`/`.close()` surface `connect_tls()`'s `ssl.SSLSocket` does,
+    so every call site above this function is unchanged."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from melon_rdma_stream import MelonRdmaError, MelonRdmaStream, MelonRdmaTlsStream
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    context.maximum_version = ssl.TLSVersion.TLSv1_3
+    context.load_verify_locations(cafile=args.ca_cert)
+    context.load_cert_chain(args.client_cert, args.client_key)
+    context.set_alpn_protocols([ALPN])
+
+    raw = socket.create_connection(
+        (args.receiver_host, args.receiver_port), timeout=args.timeout_seconds
+    )
+    try:
+        rdma_stream = MelonRdmaStream(raw, args.rdma_dev, args.rdma_gid)
+    except MelonRdmaError:
+        raw.close()
+        raise
+    stream = MelonRdmaTlsStream(rdma_stream, context, args.server_name)
+
+    if stream.selected_alpn_protocol() != ALPN:
+        stream.close()
+        raise ProtocolError("receiver did not negotiate the exact Muser ALPN")
+    leaf = stream.getpeercert(binary_form=True)
+    actual_leaf = sha256(leaf) if leaf is not None else "absent"
+    if actual_leaf != args.server_leaf_sha256:
+        stream.close()
+        raise ProtocolError(
+            f"receiver TLS leaf pin mismatch (presented {actual_leaf})"
+        )
+    return stream
+
+
+def connect_wire(args: argparse.Namespace):
+    """Dispatches to `connect_tls()` (default) or `connect_rdma_tls()`
+    depending on `--transport`. Both return a stream exposing the same
+    surface, so every caller of the old `connect_tls(args)` call sites can
+    call this instead without further changes."""
+    transport = getattr(args, "transport", "tcp")
+    if transport == "rdma":
+        return connect_rdma_tls(args)
+    if transport == "tcp":
+        return connect_tls(args)
+    raise ProtocolError(f"unknown --transport {transport!r}")
+
+
 @dataclass(frozen=True)
 class Intent:
     sequence: int
@@ -753,6 +807,28 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser.add_argument("--receiver-host", required=True)
     parser.add_argument("--receiver-port", type=int, default=29590)
     parser.add_argument("--server-name", default="muser-prefilld")
+    parser.add_argument(
+        "--transport",
+        choices=("tcp", "rdma"),
+        default=os.environ.get("MUSER_TRANSPORT", "tcp"),
+        help="data-leg wire transport: 'tcp' (default, unchanged) or 'rdma' "
+        "(MelonDMA RDMA byte-pipe under the same TLS 1.3/ALPN/leaf-pin/HMAC "
+        "stack). Also settable via MUSER_TRANSPORT.",
+    )
+    parser.add_argument(
+        "--rdma-dev",
+        default=os.environ.get("MUSER_RDMA_DEV", "rocep1s0f1"),
+        help="local RDMA device name for --transport rdma (also MUSER_RDMA_DEV)",
+    )
+    parser.add_argument(
+        "--rdma-gid",
+        type=int,
+        default=int(os.environ.get("MUSER_RDMA_GID", "2")),
+        help="local RoCEv1 GID table index for --transport rdma (also "
+        "MUSER_RDMA_GID) — re-verify with `ibv_devinfo -v` before trusting "
+        "a previously-known value; this table has drifted once already on "
+        "this hardware (a bonded interface moved it from index 4 to 2).",
+    )
     parser.add_argument("--ca-cert", required=True)
     parser.add_argument("--client-cert", required=True)
     parser.add_argument("--client-key", required=True)
@@ -942,7 +1018,18 @@ class DeferredHandoffV2Sender:
         self._begin["deferred_segments"] = True
         self._key = load_mac_key(args.hmac_key_file)
         self._transfer_start_unix_ns = time.time_ns()
-        self._wire = connect_tls(args)
+        self._wire = connect_wire(args)
+        # RDMA has no TCP_INFO-equivalent kernel busy-time counter to read
+        # (linux_tcp_busy_time_us() always returns None for it — no
+        # .getsockopt()), so it always takes the wall-clock sendall-blocked
+        # fallback below. That fallback is not a lesser measurement for
+        # RDMA specifically: melon_rdma_pipe.c's send() blocks synchronously
+        # on each operation's own completion, so the wall-clock delta IS the
+        # wire time, not an estimate padded with unrelated app think-time
+        # the way it would be for a buffered TCP write. Tagged with its own
+        # source string so validate_producer_receipt can tell the two
+        # fallback cases apart rather than accepting either silently.
+        self._transport_is_rdma = getattr(args, "transport", "tcp") == "rdma"
         self._descriptors: list[dict] = []
         self._payload_stream = hashlib.sha256()
         self._total = 0
@@ -1071,17 +1158,24 @@ class DeferredHandoffV2Sender:
         ):
             raise ProtocolError("receiver ACK identity differs from the committed generation")
         payload_wire_ns = self._payload_wire_ns
-        payload_wire_source = "sendall-blocked-time-v1"
-        payload_busy_end_us = linux_tcp_busy_time_us(self._wire)
-        if (
-            self._payload_busy_start_us is not None
-            and payload_busy_end_us is not None
-            and payload_busy_end_us > self._payload_busy_start_us
-        ):
-            payload_wire_ns = (
-                payload_busy_end_us - self._payload_busy_start_us
-            ) * 1_000
-            payload_wire_source = "linux-tcp-info-busy-time-v1"
+        if self._transport_is_rdma:
+            # melon_rdma_pipe.c's send() is synchronous per operation (blocks
+            # on that operation's own CQE), so self._payload_wire_ns is
+            # already exact wire time — there is no kernel counter to prefer
+            # it over the way there is for TCP.
+            payload_wire_source = "melon-rdma-sendall-blocked-time-v1"
+        else:
+            payload_wire_source = "sendall-blocked-time-v1"
+            payload_busy_end_us = linux_tcp_busy_time_us(self._wire)
+            if (
+                self._payload_busy_start_us is not None
+                and payload_busy_end_us is not None
+                and payload_busy_end_us > self._payload_busy_start_us
+            ):
+                payload_wire_ns = (
+                    payload_busy_end_us - self._payload_busy_start_us
+                ) * 1_000
+                payload_wire_source = "linux-tcp-info-busy-time-v1"
         self._committed = True
         receipt = {
             "ack": True,
@@ -1178,7 +1272,7 @@ def stream_live_target(
     begin["deferred_segments"] = True
     key = load_mac_key(args.hmac_key_file)
     transfer_start_unix_ns = time.time_ns()
-    wire = connect_tls(args)
+    wire = connect_wire(args)
     descriptors: list[dict] = []
     payload_stream = hashlib.sha256()
     total = 0
@@ -1410,7 +1504,7 @@ def main() -> None:
         return
     key = load_mac_key(args.hmac_key_file)
     transfer_start_unix_ns = time.time_ns()
-    stream = connect_tls(args)
+    stream = connect_wire(args)
     payload_stream = hashlib.sha256()
     committed = False
     first_segment_sent_unix_ns = 0

@@ -87,6 +87,9 @@ required-features = ["metal"]
 default = []
 metal = ["muser-engine/metal", "dep:metal"]
 ane-coreml = ["metal", "muser-engine/ane-coreml"]
+# Off by default, same as muser-cluster's own feature: a stock build never
+# requires a MelonDMA checkout or RDMA NIC.
+melon-rdma = ["muser-cluster/melon-rdma"]
 
 [dependencies]
 muser-engine = { path = "../muser-engine" }

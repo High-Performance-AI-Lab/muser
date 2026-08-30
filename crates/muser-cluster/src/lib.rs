@@ -54,6 +54,13 @@ pub mod muse_sink;
 /// TLS 1.3/mTLS/ALPN/leaf-pin establishment and durable replay admission.
 pub mod security;
 
+/// RDMA `Read + Write` byte-pipe (MelonDMA), used as a drop-in replacement
+/// for `TcpStream` underneath the same mTLS/ALPN/leaf-pin/HMAC/replay-ledger
+/// stack above. Only compiled with `--features melon-rdma`; a stock build
+/// never touches it.
+#[cfg(feature = "melon-rdma")]
+pub mod melon_rdma;
+
 /// Exact model/request/component admission wrapped around any V2 sink.
 pub mod identity;
 

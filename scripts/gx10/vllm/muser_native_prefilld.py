@@ -63,6 +63,19 @@ CONTAINER_OVERLAY_MOUNTS = (
         "/opt/muser/scripts/gx10/llamacpp/llamacpp_session_send.py",
     ),
     (LLAMACPP_DIR / "protocol.py", "/opt/muser/scripts/gx10/llamacpp/protocol.py"),
+    # MelonDMA RDMA transport (off by default; MUSER_TRANSPORT=rdma below
+    # opts in). melon_rdma_stream.py is muser_v2_send.py's optional RDMA
+    # byte-pipe; the .so must be compiled inside the exact pinned image (see
+    # `docker run --rm --entrypoint gcc ...` against melon_rdma_pipe.c on the
+    # GX10 node) so its glibc/libibverbs ABI always matches what runs it.
+    (
+        LLAMACPP_DIR / "melon_rdma_stream.py",
+        "/opt/muser/scripts/gx10/llamacpp/melon_rdma_stream.py",
+    ),
+    (
+        LLAMACPP_DIR / "libmelon_rdma_pipe.so",
+        "/opt/muser/scripts/gx10/llamacpp/libmelon_rdma_pipe.so",
+    ),
 )
 DEPLOYED_LLAMACPP_FILES = (
     "muser_prefilld.py",
@@ -554,6 +567,26 @@ def start_container(config: dict[str, Any]) -> Path:
         f"{os.getuid()}:{os.getgid()}",
         "-e",
         "MUSER_NVFP4_EXACT=0",
+        # MelonDMA RDMA transport: off by default (MUSER_TRANSPORT defaults
+        # to "tcp" below, unchanged behavior). Read from this host process's
+        # own environment (e.g. the systemd unit's EnvironmentFile) so the
+        # transport can be flipped without editing this file again. Device
+        # nodes are passed through unconditionally (harmless, world-rw on
+        # this host) so a later opt-in does not itself require a restart
+        # for that half of it.
+        "-e",
+        f"MUSER_TRANSPORT={os.environ.get('MUSER_TRANSPORT', 'tcp')}",
+        "-e",
+        f"MUSER_RDMA_DEV={os.environ.get('MUSER_RDMA_DEV', 'rocep1s0f1')}",
+        "-e",
+        f"MUSER_RDMA_GID={os.environ.get('MUSER_RDMA_GID', '2')}",
+        "-e",
+        "MELON_RDMA_PIPE_LIB=/opt/muser/scripts/gx10/llamacpp/libmelon_rdma_pipe.so",
+        "--device=/dev/infiniband/uverbs0",
+        "--device=/dev/infiniband/uverbs1",
+        "--device=/dev/infiniband/uverbs2",
+        "--device=/dev/infiniband/uverbs3",
+        "--device=/dev/infiniband/rdma_cm",
         "-v",
         f"{NODE_GPU_LOCK}:{NODE_GPU_LOCK}",
         "-v",
@@ -793,7 +826,21 @@ def validate_producer_receipt(
         or not isinstance(connector_total, int)
         or not isinstance(first_offset, int)
         or not 0 < first_offset <= d2h <= connector_total
-        or handoff.get("payload_wire_source") != "linux-tcp-info-busy-time-v1"
+        or handoff.get("payload_wire_source") not in (
+            "linux-tcp-info-busy-time-v1",
+            # RDMA has no TCP_INFO-equivalent kernel counter; melon_rdma_pipe.c's
+            # send() blocks synchronously per operation, so the wall-clock
+            # sendall-blocked measurement it falls back to is exact wire time
+            # for this transport, not an estimate — see muser_v2_send.py's
+            # DeferredHandoffV2Sender.seal(). Only accepted together with
+            # MUSER_TRANSPORT=rdma in this same daemon's own environment,
+            # which os.environ.get() below re-checks independently rather
+            # than trusting the label a compromised producer client could
+            # otherwise forge.
+            "melon-rdma-sendall-blocked-time-v1"
+            if os.environ.get("MUSER_TRANSPORT") == "rdma"
+            else "linux-tcp-info-busy-time-v1",
+        )
         or not isinstance(handoff.get("segments"), int)
         or handoff["segments"] <= 0
         or not isinstance(handoff.get("payload_pacing_bps"), int)

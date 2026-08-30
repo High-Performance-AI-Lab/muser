@@ -10,6 +10,12 @@ publish.workspace = true
 name = "muser_cluster"
 path = "src/lib.rs"
 
+[features]
+# Off by default: a stock `cargo build` must never require MelonDMA's dext
+# checkout or a working RDMA NIC. Enable explicitly to build the RDMA
+# transport path (see native/melon_rdma/).
+melon-rdma = []
+
 [dependencies]
 muser-kvpack = { path = "../muser-kvpack" }
 muser-engine = { path = "../muser-engine" }
@@ -21,6 +27,9 @@ serde_json = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 libc = "0.2"
 ring = "0.17"
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 tempfile = "3"

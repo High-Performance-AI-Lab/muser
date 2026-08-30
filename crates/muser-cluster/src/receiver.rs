@@ -8,6 +8,7 @@
 //! and the configuration names a single control endpoint and HMAC key id.
 //! Connections that arrive for any other request are closed, never installed.
 
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,6 +37,74 @@ use crate::security::{
     ServerTlsStream, TlsFiles,
 };
 use crate::transport::{BeginAdmissionV2, FrameLimitsV2};
+
+/// Either transport's server-side TLS stream. The `receive_v2`/`producer.rs`
+/// family below the accept path is already generic over `impl Read + Write`
+/// — this is the minimum needed so the accept path itself (which does own
+/// the concrete TLS/transport setup) can select TCP or RDMA per receiver
+/// process without duplicating any of that logic.
+enum AnyServerTlsStream {
+    Tcp(ServerTlsStream),
+    #[cfg(feature = "melon-rdma")]
+    Rdma(crate::security::rdma::ServerTlsStreamRdma),
+}
+
+impl Read for AnyServerTlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            AnyServerTlsStream::Tcp(s) => s.read(buf),
+            #[cfg(feature = "melon-rdma")]
+            AnyServerTlsStream::Rdma(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for AnyServerTlsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            AnyServerTlsStream::Tcp(s) => s.write(buf),
+            #[cfg(feature = "melon-rdma")]
+            AnyServerTlsStream::Rdma(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            AnyServerTlsStream::Tcp(s) => s.flush(),
+            #[cfg(feature = "melon-rdma")]
+            AnyServerTlsStream::Rdma(s) => s.flush(),
+        }
+    }
+}
+
+/// `MUSER_TRANSPORT=rdma` selects the RDMA accept path for every incoming
+/// connection on this receiver process; unset (or any other value) is the
+/// unchanged TCP default. A per-process switch, not a per-connection
+/// negotiation — matching how `GGML_RPC_REQUIRE_RDMA` gates MelonDMA's
+/// llama.cpp transport. First pass: an env var, not a `ReceiverConfigV2`
+/// field, to avoid touching that struct's `deny_unknown_fields` schema and
+/// `muser node add`'s config generator while this path is still being
+/// proven — fold it into the generated config once proven on hardware.
+fn rdma_transport_enabled() -> bool {
+    std::env::var("MUSER_TRANSPORT")
+        .map(|value| value == "rdma")
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "melon-rdma")]
+fn rdma_dev() -> String {
+    std::env::var("MUSER_RDMA_DEV").unwrap_or_else(|_| "mlx5_0".to_string())
+}
+
+#[cfg(feature = "melon-rdma")]
+fn rdma_gid_index() -> i32 {
+    // Re-verify with `ibv_devinfo -v` before trusting a previously-known
+    // value — this exact GID table has drifted once already on the paired
+    // Linux box (a bonded interface moved the expected RoCEv1 entry).
+    std::env::var("MUSER_RDMA_GID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
 
 /// Producer telemetry is read after the generation is already live, so it is
 /// held to a deadline that decode can afford to lose.
@@ -521,7 +590,7 @@ impl RemoteReceiver {
         &self,
         expected_prefix: Option<&str>,
         wait: Duration,
-    ) -> Result<(ServerTlsStream, BeginAdmissionV2), RemoteReceiveError> {
+    ) -> Result<(AnyServerTlsStream, BeginAdmissionV2), RemoteReceiveError> {
         let deadline = Instant::now() + wait;
         let mut dropped = 0usize;
         let mut last_drop = String::new();
@@ -554,18 +623,38 @@ impl RemoteReceiver {
         &self,
         tcp: TcpStream,
         deadline: Instant,
-    ) -> Result<(ServerTlsStream, BeginAdmissionV2), String> {
-        let mut stream = accept_mtls(
-            tcp,
-            TlsFiles {
-                certificate_chain: &self.config.certificate_chain,
-                private_key: &self.config.private_key,
-                peer_ca: &self.config.peer_ca,
-                leaf_sha256_pins: &self.config.peer_leaf_sha256,
-            },
-            self.config.timeout(),
-        )
-        .map_err(|error| error.to_string())?;
+    ) -> Result<(AnyServerTlsStream, BeginAdmissionV2), String> {
+        let files = TlsFiles {
+            certificate_chain: &self.config.certificate_chain,
+            private_key: &self.config.private_key,
+            peer_ca: &self.config.peer_ca,
+            leaf_sha256_pins: &self.config.peer_leaf_sha256,
+        };
+        let mut stream = if rdma_transport_enabled() {
+            #[cfg(feature = "melon-rdma")]
+            {
+                let rdma = crate::security::rdma::accept_mtls_over_rdma(
+                    tcp,
+                    files,
+                    crate::security::MUSER_HANDOFF_ALPN,
+                    &rdma_dev(),
+                    rdma_gid_index(),
+                )
+                .map_err(|error| error.to_string())?;
+                AnyServerTlsStream::Rdma(rdma)
+            }
+            #[cfg(not(feature = "melon-rdma"))]
+            {
+                return Err(
+                    "MUSER_TRANSPORT=rdma requested but this build lacks the melon-rdma feature"
+                        .to_string(),
+                );
+            }
+        } else {
+            let tcp_tls = accept_mtls(tcp, files, self.config.timeout())
+                .map_err(|error| error.to_string())?;
+            AnyServerTlsStream::Tcp(tcp_tls)
+        };
         // A producer that handshakes and then says nothing must not hold the
         // whole socket timeout: admission is bounded by the accept deadline
         // this request is already waiting on.
@@ -631,11 +720,20 @@ impl RemoteReceiver {
     }
 }
 
-fn set_read_timeout(stream: &ServerTlsStream, timeout: Duration) -> Result<(), String> {
-    stream
-        .sock
-        .set_read_timeout(Some(timeout))
-        .map_err(|error| error.to_string())
+fn set_read_timeout(stream: &AnyServerTlsStream, timeout: Duration) -> Result<(), String> {
+    match stream {
+        AnyServerTlsStream::Tcp(s) => s
+            .sock
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| error.to_string()),
+        // The RDMA byte-pipe's recv() has no socket-level read-timeout
+        // equivalent yet — a known limitation of this first pass, not an
+        // oversight. A stalled peer still surfaces (an RC QP's bounded
+        // retry count eventually produces an error completion rather than
+        // hanging the process forever), just not on this specific deadline.
+        #[cfg(feature = "melon-rdma")]
+        AnyServerTlsStream::Rdma(_) => Ok(()),
+    }
 }
 
 static REMOTE_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);

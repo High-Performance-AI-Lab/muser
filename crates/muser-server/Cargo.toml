@@ -11,6 +11,9 @@ default = ["metal"]
 metal = ["muser-engine/metal"]
 ane-coreml = ["muser-engine/ane-coreml"]
 release-real-model = ["muser-engine/release-real-model"]
+# Off by default, same as muser-cluster's own feature: a stock `cargo build`
+# never requires a MelonDMA checkout or RDMA NIC.
+melon-rdma = ["muser-cluster/melon-rdma"]
 
 [[bin]]
 name = "muser"

@@ -628,6 +628,14 @@ class MuserMuseHandoffConnector(KVConnectorBase_V1):
         merged = dict(self._extra)
         merged.update(handoff)
         merged.setdefault("timeout_seconds", 900)
+        # MelonDMA RDMA transport: opt-in via this container's own
+        # environment (set at `docker run` time in muser_native_prefilld.py;
+        # defaults to unchanged "tcp" behavior). connect_wire() in
+        # muser_v2_send.py reads these off the DeferredHandoffV2Sender args
+        # namespace built from this dict.
+        merged.setdefault("transport", os.environ.get("MUSER_TRANSPORT", "tcp"))
+        merged.setdefault("rdma_dev", os.environ.get("MUSER_RDMA_DEV", "rocep1s0f1"))
+        merged.setdefault("rdma_gid", int(os.environ.get("MUSER_RDMA_GID", "2")))
         merged.update({
                 "dflash_session": handoff.get("dflash_session"),
                 "dflash_identity_sha256": handoff.get("dflash_identity_sha256"),
