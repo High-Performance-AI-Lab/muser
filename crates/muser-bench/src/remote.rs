@@ -201,6 +201,9 @@ struct CellDiff {
 
 #[derive(Serialize)]
 struct Sample<'a> {
+    /// Nanoseconds of payload transfer left over after prefill ended; the
+    /// share of TTFT the wire is actually on the critical path for.
+    producer_transfer_tail_ns: Option<u64>,
     /// `rdma-bulk` when segment payloads crossed the MelonDMA bulk lane,
     /// `tls` when they rode the mTLS stream.
     payload_lane: &'static str,
@@ -276,6 +279,9 @@ struct Sample<'a> {
 
 #[derive(Serialize)]
 struct FastPerformanceSample<'a> {
+    /// Nanoseconds of payload transfer left over after prefill ended; the
+    /// share of TTFT the wire is actually on the critical path for.
+    producer_transfer_tail_ns: Option<u64>,
     /// `rdma-bulk` when segment payloads crossed the MelonDMA bulk lane,
     /// `tls` when they rode the mTLS stream.
     payload_lane: &'static str,
@@ -313,6 +319,9 @@ struct FastPerformanceSample<'a> {
 
 #[derive(Serialize)]
 struct OperationalProbeSample<'a> {
+    /// Nanoseconds of payload transfer left over after prefill ended; the
+    /// share of TTFT the wire is actually on the critical path for.
+    producer_transfer_tail_ns: Option<u64>,
     /// `rdma-bulk` when segment payloads crossed the MelonDMA bulk lane,
     /// `tls` when they rode the mTLS stream.
     payload_lane: &'static str,
@@ -1007,6 +1016,7 @@ fn run() -> Result<(), String> {
             (install_span != 0).then(|| receipt.installed_bytes as f64 * 8.0 / install_span as f64);
         let (export_ratio, first_tile_fraction, hidden_ratio) =
             (Some(phases.0), Some(phases.1), Some(phases.2));
+        let transfer_tail_ns = receipt.producer.as_ref().map(transfer_tail_ns);
         let local_acceptance = local_dflash.as_ref().map(|run| run.stats.acceptance_rate());
         let remote_acceptance = remote_dflash
             .as_ref()
@@ -1034,6 +1044,7 @@ fn run() -> Result<(), String> {
         println!(
             "{}",
             serde_json::to_string(&Sample {
+                producer_transfer_tail_ns: transfer_tail_ns,
                 payload_lane: if receipt.bulk_lane { "rdma-bulk" } else { "tls" },
                 schema: "muser.remote-qualify.v1",
                 kind: "sample",
@@ -1284,6 +1295,7 @@ fn run_fast_performance_only(
         println!(
             "{}",
             serde_json::to_string(&FastPerformanceSample {
+                producer_transfer_tail_ns: receipt.producer.as_ref().map(transfer_tail_ns),
                 payload_lane: if receipt.bulk_lane { "rdma-bulk" } else { "tls" },
                 schema: "muser.remote-qualify.v1",
                 kind: "fast-performance-sample",
@@ -1455,6 +1467,7 @@ fn run_operational_probe(
     println!(
         "{}",
         serde_json::to_string(&OperationalProbeSample {
+            producer_transfer_tail_ns: receipt.producer.as_ref().map(transfer_tail_ns),
                 payload_lane: if receipt.bulk_lane { "rdma-bulk" } else { "tls" },
             schema: "muser.remote-qualify.v1",
             kind: "operational-probe",
@@ -1818,14 +1831,14 @@ fn run_remote_target(
         "remote-target-prefill-export-receive:session-create:{}ns",
         session_started.elapsed().as_nanos()
     ));
-    let receipt = receiver.receive(
+    let receipt = with_producer_receipt(&receiver, receiver.receive(
         &mut session,
         dflash,
         &prepared.witnesses,
         prepared.multimodal.clone(),
         max_context,
         wait_without_control,
-    )?;
+    )?);
     phase("remote-target-prefill-export-receive:done");
     let boundary = *prepared.witnesses.last().expect("validated");
     if boundary == EMBEDDING_POSITION_WITNESS {
@@ -1906,24 +1919,24 @@ fn run_delta_probe(
     // needed at the cut. The receiver itself holds back the last witness, so
     // the prefix receive is armed with cut + 1 witnesses to expect a
     // cut-token manifest.
-    let prefix_receipt = receiver.receive(
+    let prefix_receipt = with_producer_receipt(&receiver, receiver.receive(
         &mut session,
         None,
         &prepared.witnesses[..=cut],
         None,
         max_context,
         true,
-    )?;
+    )?);
     phase("remote-delta-prefix-receive:done");
     phase("remote-delta-receive:start");
-    let delta_receipt = receiver.receive(
+    let delta_receipt = with_producer_receipt(&receiver, receiver.receive(
         &mut session,
         None,
         &prepared.witnesses,
         None,
         max_context,
         true,
-    )?;
+    )?);
     phase("remote-delta-receive:done");
     let boundary = *prepared.witnesses.last().expect("validated");
     if boundary == EMBEDDING_POSITION_WITNESS {
@@ -1936,14 +1949,14 @@ fn run_delta_probe(
     let delta = generate_target(model, &mut session, logits, args.output_tokens, true)?;
     phase("remote-delta-reference-receive:start");
     let mut reference_session = new_metal_session(model, max_context)?;
-    let reference_receipt = receiver.receive(
+    let reference_receipt = with_producer_receipt(&receiver, receiver.receive(
         &mut reference_session,
         None,
         &prepared.witnesses,
         None,
         max_context,
         true,
-    )?;
+    )?);
     phase("remote-delta-reference-receive:done");
     let reference_logits = reference_session
         .decode(DecodeInput { token_id: boundary })
@@ -2682,14 +2695,14 @@ fn run_remote_dflash(
     phase("remote-dflash-prefill-export-receive:start");
     let mut session = new_metal_session(model, max_context)?;
     assistant.reset();
-    let receipt = receiver.receive(
+    let receipt = with_producer_receipt(&receiver, receiver.receive(
         &mut session,
         Some(assistant),
         &prepared.witnesses,
         prepared.multimodal.clone(),
         max_context,
         wait_without_control,
-    )?;
+    )?);
     let context = assistant.export_context_snapshot();
     phase("remote-dflash-prefill-export-receive:done");
     let boundary = *prepared.witnesses.last().expect("validated");
@@ -2874,6 +2887,30 @@ fn prepare_prompt(args: &Args, model: &Model, tokens: &[u32]) -> Result<Prepared
             ],
         )),
     })
+}
+
+/// The producer receipt can arrive after the transfer call returns — the
+/// receiver deliberately stops waiting for telemetry once the generation is
+/// live. Qualification reports it, so here it is worth waiting for.
+fn with_producer_receipt(
+    receiver: &RemoteReceiver,
+    mut receipt: RemoteReceiveReceipt,
+) -> RemoteReceiveReceipt {
+    if receipt.producer.is_none() {
+        receipt.producer = receiver.take_producer_receipt(Duration::from_secs(30));
+    }
+    receipt
+}
+
+/// Payload still on the wire after prefill finished. muser streams the SWA
+/// tiles during the final forward, but the NoPE tiles need its last layer, so
+/// on a deep prompt nearly every byte leaves after prefill ends and TTFT waits
+/// for it. This is the part of a handoff a faster transport can remove, and
+/// the part per-chunk streaming would remove without one.
+fn transfer_tail_ns(receipt: &ProducerPhaseReceiptV1) -> u64 {
+    receipt
+        .transfer_acked_unix_ns
+        .saturating_sub(receipt.prefill_end_unix_ns)
 }
 
 fn phase_metrics(receipt: &ProducerPhaseReceiptV1) -> Result<(f64, f64, f64), String> {

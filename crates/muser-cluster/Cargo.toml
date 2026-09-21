@@ -33,3 +33,9 @@ cc = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[example]]
+name = "melon_bulk_probe"
+# Brings up the RDMA lane on real hardware; a stock build has neither the
+# feature nor a MelonDMA checkout to compile it against.
+required-features = ["melon-rdma"]

@@ -961,6 +961,7 @@ def run_request(
         result = run_controlled_command(
             config, command, control_stream, transfer_id
         )
+        client_returned_unix_ns = time.time_ns()
         if result.returncode != 0:
             restore_request_slot_after_client_failure(config, transfer_id)
             raise NativePrefilldError(
@@ -968,7 +969,7 @@ def run_request(
             )
         regular_file(receipt_path, "native producer request receipt")
         value = json.loads(receipt_path.read_text(encoding="utf-8"))
-        return validate_producer_receipt(
+        receipt = validate_producer_receipt(
             value,
             request,
             transfer_id,
@@ -976,6 +977,31 @@ def run_request(
             config["vllm_commit"],
             rdma_settings(config) is not None,
         )
+        # The receiver reads this receipt on a 250 ms deadline it holds decode
+        # behind, and above ~16k tokens it reproducibly arrives too late. The
+        # split says which half to fix: the client run finishing (the request
+        # process and its `docker exec` teardown) or this daemon's own
+        # validation after it.
+        validated_unix_ns = time.time_ns()
+        acked = receipt["transfer_acked_unix_ns"]
+        print(
+            "muser-native-prefilld: post-ack telemetry "
+            + json.dumps(
+                {
+                    "transfer_id": transfer_id,
+                    "prefill_tokens": receipt["prefill_tokens"],
+                    "ack_to_client_exit_ms": (client_returned_unix_ns - acked) / 1e6,
+                    "client_exit_to_validated_ms": (validated_unix_ns - client_returned_unix_ns)
+                    / 1e6,
+                    "ack_to_response_ms": (validated_unix_ns - acked) / 1e6,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        return receipt
     finally:
         token_path.unlink(missing_ok=True)
         receipt_path.unlink(missing_ok=True)

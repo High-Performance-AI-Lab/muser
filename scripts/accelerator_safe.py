@@ -172,26 +172,59 @@ def process_uses_accelerator(executable: str, command: str) -> bool:
 
 
 _SERVE_PORT = re.compile(r"(?:^|/)muser\s+serve\b.*?--port\s+(\d+)")
+_LLAMA_SERVER_PORT = re.compile(r"(?:^|/)llama-server\b.*?--port\s+(\d+)")
 
 
 def _is_accelerator_free_server(command: str) -> bool:
     """A modelless `muser serve` (dashboard only) holds no accelerator; its
-    /healthz says so explicitly. Anything unreachable or with a model loaded
+    /healthz says so explicitly. A `llama-server` multi-model router (e.g. a
+    `--models-preset` cluster front-end) is the same shape — it holds no
+    accelerator while every listed model reports itself unloaded, per its own
+    `/v1/models`. Anything unreachable, unrecognized, or with a model loaded
     stays a violation — verification, not trust in the process name."""
     match = _SERVE_PORT.search(command)
-    if match is None:
-        return False
+    if match is not None:
+        return _muser_serve_is_free(match.group(1))
+    match = _LLAMA_SERVER_PORT.search(command)
+    if match is not None:
+        return _llama_server_is_free(match.group(1))
+    return False
+
+
+def _muser_serve_is_free(port: str) -> bool:
     import json as _json
     import urllib.request
 
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{match.group(1)}/healthz", timeout=1
+            f"http://127.0.0.1:{port}/healthz", timeout=1
         ) as response:
             health = _json.loads(response.read().decode())
     except Exception:
         return False
     return health.get("accelerator_in_use") is False
+
+
+def _llama_server_is_free(port: str) -> bool:
+    import json as _json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/v1/models", timeout=1
+        ) as response:
+            payload = _json.loads(response.read().decode())
+    except Exception:
+        return False
+    models = payload.get("data")
+    if not isinstance(models, list):
+        return False
+    for model in models:
+        status = model.get("status") if isinstance(model, dict) else None
+        value = status.get("value") if isinstance(status, dict) else None
+        if value != "unloaded":
+            return False
+    return True
 
 
 def append_record(path: Path, record: dict[str, object]) -> None:

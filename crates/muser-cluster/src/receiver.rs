@@ -48,6 +48,11 @@ type BulkLane = Box<dyn BulkPayloadSource + Send>;
 /// held to a deadline that decode can afford to lose.
 const PRODUCER_RECEIPT_DEADLINE: Duration = Duration::from_millis(250);
 
+/// How long the background reader keeps the control connection open waiting
+/// for that receipt. It costs nothing on the TTFT path and spares the producer
+/// a cancelled request; the producer's own request timeout is far longer.
+const PRODUCER_RECEIPT_WAIT: Duration = Duration::from_secs(60);
+
 /// Why one remote prefill did not become live. The server owns the fallback
 /// counters; this is the taxonomy it counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +213,9 @@ pub struct RemoteReceiver {
     replay: Mutex<ReplayLedger>,
     key: kvpack_handoff::MacKey,
     config: ReceiverConfigV2,
+    /// A producer receipt still in flight when the transfer returned. One
+    /// transfer runs at a time, so one slot is the whole story.
+    pending_receipt: Mutex<Option<std::sync::mpsc::Receiver<Option<ProducerPhaseReceiptV1>>>>,
 }
 
 impl RemoteReceiver {
@@ -224,6 +232,7 @@ impl RemoteReceiver {
         Ok(Self {
             listener,
             receive_lease: Mutex::new(()),
+            pending_receipt: Mutex::new(None),
             replay: Mutex::new(replay),
             key,
             config,
@@ -404,20 +413,40 @@ impl RemoteReceiver {
             mapped
         })?;
         let transfer_commit_ns = nanos(transfer_started.elapsed());
+        // Handoff ACK is the TTFT commit boundary (`transfer_commit_ns`). This
+        // later control-channel receipt is telemetry only and must never hold
+        // decode behind the producer — but abandoning the connection at the
+        // deadline is not free either: the producer reads the close as the
+        // receiver going away, cancels a request it already completed, and has
+        // been seen restarting its resident model over it. So the wait moves
+        // to a thread that keeps the connection open until the producer
+        // answers, while this path still gives a prompt producer the same
+        // short budget it always had. The gap grows with depth — 29 ms at
+        // 2,048 tokens, 92 ms at 16,384, past the old 250 ms deadline by
+        // 65,536 — so above some depth the inline read only ever lost.
         let mut producer = None;
-        if let Some(stream) = control.as_mut() {
-            // Handoff ACK is the TTFT commit boundary (`transfer_commit_ns`).
-            // This later control-channel receipt is telemetry only, can never
-            // roll the generation back, and must never hold decode behind the
-            // producer: past its own short deadline it is simply absent.
-            let _ = stream
-                .sock
-                .set_read_timeout(Some(PRODUCER_RECEIPT_DEADLINE));
-            if let Ok(response) = read_control::<PrefillControlResponseV1>(stream) {
-                if response.validate(&request_id).is_ok()
-                    && response.status == PrefillControlStatusV1::Committed
-                {
-                    producer = response.receipt;
+        if let Some(mut stream) = control.take() {
+            let expected = request_id.clone();
+            let (sender, pending) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = stream.sock.set_read_timeout(Some(PRODUCER_RECEIPT_WAIT));
+                let receipt = match read_control::<PrefillControlResponseV1>(&mut stream) {
+                    Ok(response)
+                        if response.validate(&expected).is_ok()
+                            && response.status == PrefillControlStatusV1::Committed =>
+                    {
+                        response.receipt
+                    }
+                    _ => None,
+                };
+                let _ = sender.send(receipt);
+            });
+            match pending.recv_timeout(PRODUCER_RECEIPT_DEADLINE) {
+                Ok(receipt) => producer = receipt,
+                Err(_) => {
+                    if let Ok(mut slot) = self.pending_receipt.lock() {
+                        *slot = Some(pending);
+                    }
                 }
             }
         }
@@ -453,6 +482,14 @@ impl RemoteReceiver {
             components,
             bulk_lane,
         })
+    }
+
+    /// The producer receipt for the last transfer, when it arrived after the
+    /// TTFT path had already moved on. Serving ignores it; qualification and
+    /// benchmarks want it, and can afford to wait.
+    pub fn take_producer_receipt(&self, timeout: Duration) -> Option<ProducerPhaseReceiptV1> {
+        let pending = self.pending_receipt.lock().ok()?.take()?;
+        pending.recv_timeout(timeout).ok().flatten()
     }
 
     fn start_control(
