@@ -1,0 +1,29 @@
+{
+  "schema": "muser.nvfp4-runtime-identity.v1",
+  "status": "frozen",
+  "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
+  "checkpoint": {
+    "revision": "d5109a1d187c27bd1734e81844e71aa4d964e66a",
+    "artifact_sha256": "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
+    "runtime_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/spark-runtime-v13.json",
+    "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
+  },
+  "producer_image": {
+    "tag": "ghcr.io/high-performance-ai-lab/muser-gx10-vllm-native:nvfp4-20260828",
+    "image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/nvfp4-vllm-image-release-final3-20260828.json",
+    "receipt_sha256": "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6"
+  },
+  "vllm_overlay": {
+    "adapter_sha256": "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
+    "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+    "receipt": "release/nvfp4-runtime-overlay-v2.json",
+    "receipt_sha256": "b8914862d9239411dbbe2cdc5976aa1975ad4607246d2f1329f796916fae166d"
+  },
+  "evidence": [
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/source-match-verdict.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/registry-after.json"
+  ],
+  "ledger_basis": "docs/goal-parity-ledger-2026-08.md final-image provenance entry, committed as 4f242d2"
+}

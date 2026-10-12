@@ -1,0 +1,1769 @@
+diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
+index 7c495af..7a5608c 100644
+--- a/tools/llama-bench/llama-bench.cpp
++++ b/tools/llama-bench/llama-bench.cpp
+@@ -9,11 +9,14 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <ctime>
++#include <fstream>
+ #include <iterator>
++#include <limits>
+ #include <map>
+ #include <numeric>
+ #include <regex>
+ #include <sstream>
++#include <stdexcept>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -28,6 +31,26 @@
+ #include "llama.h"
+ #include "log.h"
+ 
++#define MUSER_STRINGIFY_INNER(value) #value
++#define MUSER_STRINGIFY(value) MUSER_STRINGIFY_INNER(value)
++
++#ifndef MUSER_COMPARATOR_UPSTREAM_COMMIT
++#define MUSER_COMPARATOR_UPSTREAM_COMMIT UNSEALED
++#endif
++
++#ifndef MUSER_COMPARATOR_PATCH_SHA256
++#define MUSER_COMPARATOR_PATCH_SHA256 UNSEALED
++#endif
++
++static const char MUSER_BUILD_UPSTREAM_MARKER[] =
++    "muser-comparator-upstream=" MUSER_STRINGIFY(MUSER_COMPARATOR_UPSTREAM_COMMIT);
++static const char MUSER_BUILD_PATCH_MARKER[] =
++    "muser-comparator-patch-sha256=" MUSER_STRINGIFY(MUSER_COMPARATOR_PATCH_SHA256);
++static const char * MUSER_BUILD_UPSTREAM_COMMIT =
++    MUSER_BUILD_UPSTREAM_MARKER + sizeof("muser-comparator-upstream=") - 1;
++static const char * MUSER_BUILD_PATCH_SHA256 =
++    MUSER_BUILD_PATCH_MARKER + sizeof("muser-comparator-patch-sha256=") - 1;
++
+ #ifdef _WIN32
+ #    define WIN32_LEAN_AND_MEAN
+ #    ifndef NOMINMAX
+@@ -93,6 +116,271 @@ template <class T> static std::string join(const std::vector<T> & values, const
+     return str.str();
+ }
+ 
++class comparator_sha256 {
++  public:
++    comparator_sha256() : state_({
++        0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
++        0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U,
++    }) {}
++
++    void update(const uint8_t * data, size_t size) {
++        total_bytes_ += size;
++        while (size > 0) {
++            const size_t copied = std::min(size, block_.size() - block_size_);
++            std::memcpy(block_.data() + block_size_, data, copied);
++            block_size_ += copied;
++            data += copied;
++            size -= copied;
++            if (block_size_ == block_.size()) {
++                transform(block_.data());
++                block_size_ = 0;
++            }
++        }
++    }
++
++    void update(const char * data, size_t size) {
++        update(reinterpret_cast<const uint8_t *>(data), size);
++    }
++
++    std::string hex_digest() const {
++        comparator_sha256 copy = *this;
++        const std::array<uint8_t, 32> digest = copy.finalize();
++        static const char digits[] = "0123456789abcdef";
++        std::string result;
++        result.reserve(digest.size() * 2);
++        for (uint8_t byte : digest) {
++            result.push_back(digits[byte >> 4]);
++            result.push_back(digits[byte & 0x0f]);
++        }
++        return result;
++    }
++
++  private:
++    static uint32_t rotate_right(uint32_t value, uint32_t count) {
++        return (value >> count) | (value << (32 - count));
++    }
++
++    void transform(const uint8_t * block) {
++        static const uint32_t constants[64] = {
++            0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
++            0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
++            0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
++            0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
++            0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
++            0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
++            0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
++            0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
++        };
++
++        uint32_t words[64];
++        for (size_t i = 0; i < 16; ++i) {
++            words[i] = (uint32_t(block[4 * i]) << 24) |
++                       (uint32_t(block[4 * i + 1]) << 16) |
++                       (uint32_t(block[4 * i + 2]) << 8) |
++                       uint32_t(block[4 * i + 3]);
++        }
++        for (size_t i = 16; i < 64; ++i) {
++            const uint32_t s0 = rotate_right(words[i - 15], 7) ^ rotate_right(words[i - 15], 18) ^ (words[i - 15] >> 3);
++            const uint32_t s1 = rotate_right(words[i - 2], 17) ^ rotate_right(words[i - 2], 19) ^ (words[i - 2] >> 10);
++            words[i] = words[i - 16] + s0 + words[i - 7] + s1;
++        }
++
++        uint32_t a = state_[0];
++        uint32_t b = state_[1];
++        uint32_t c = state_[2];
++        uint32_t d = state_[3];
++        uint32_t e = state_[4];
++        uint32_t f = state_[5];
++        uint32_t g = state_[6];
++        uint32_t h = state_[7];
++        for (size_t i = 0; i < 64; ++i) {
++            const uint32_t sum1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
++            const uint32_t choose = (e & f) ^ ((~e) & g);
++            const uint32_t temp1 = h + sum1 + choose + constants[i] + words[i];
++            const uint32_t sum0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
++            const uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
++            const uint32_t temp2 = sum0 + majority;
++            h = g;
++            g = f;
++            f = e;
++            e = d + temp1;
++            d = c;
++            c = b;
++            b = a;
++            a = temp1 + temp2;
++        }
++        state_[0] += a;
++        state_[1] += b;
++        state_[2] += c;
++        state_[3] += d;
++        state_[4] += e;
++        state_[5] += f;
++        state_[6] += g;
++        state_[7] += h;
++    }
++
++    std::array<uint8_t, 32> finalize() {
++        const uint64_t bit_length = total_bytes_ * 8;
++        block_[block_size_++] = 0x80;
++        if (block_size_ > 56) {
++            std::fill(block_.begin() + block_size_, block_.end(), 0);
++            transform(block_.data());
++            block_size_ = 0;
++        }
++        std::fill(block_.begin() + block_size_, block_.begin() + 56, 0);
++        for (size_t i = 0; i < 8; ++i) {
++            block_[63 - i] = uint8_t(bit_length >> (i * 8));
++        }
++        transform(block_.data());
++
++        std::array<uint8_t, 32> digest{};
++        for (size_t i = 0; i < state_.size(); ++i) {
++            digest[4 * i]     = uint8_t(state_[i] >> 24);
++            digest[4 * i + 1] = uint8_t(state_[i] >> 16);
++            digest[4 * i + 2] = uint8_t(state_[i] >> 8);
++            digest[4 * i + 3] = uint8_t(state_[i]);
++        }
++        return digest;
++    }
++
++    std::array<uint32_t, 8> state_;
++    std::array<uint8_t, 64> block_{};
++    uint64_t total_bytes_ = 0;
++    size_t block_size_ = 0;
++};
++
++static void sha256_update_u32_le(comparator_sha256 & hasher, uint32_t value) {
++    const uint8_t bytes[4] = {
++        uint8_t(value), uint8_t(value >> 8), uint8_t(value >> 16), uint8_t(value >> 24),
++    };
++    hasher.update(bytes, sizeof(bytes));
++}
++
++static void sha256_update_u64_le(comparator_sha256 & hasher, uint64_t value) {
++    uint8_t bytes[8];
++    for (size_t i = 0; i < sizeof(bytes); ++i) {
++        bytes[i] = uint8_t(value >> (8 * i));
++    }
++    hasher.update(bytes, sizeof(bytes));
++}
++
++struct token_fixture {
++    std::string path;
++    std::vector<llama_token> tokens;
++    std::string file_sha256;
++    std::string tokens_sha256;
++
++    bool supplied() const {
++        return !path.empty();
++    }
++};
++
++static std::string token_vector_sha256(const std::vector<llama_token> & tokens) {
++    comparator_sha256 hasher;
++    for (llama_token token : tokens) {
++        sha256_update_u32_le(hasher, uint32_t(token));
++    }
++    return hasher.hex_digest();
++}
++
++static void append_fixture_workload(comparator_sha256 & hasher, const token_fixture & fixture) {
++    sha256_update_u64_le(hasher, fixture.tokens.size());
++    for (llama_token token : fixture.tokens) {
++        sha256_update_u32_le(hasher, uint32_t(token));
++    }
++}
++
++static std::string workload_sha256(const token_fixture & prompt, const token_fixture & decode) {
++    static const char domain[] = "muser-bench-workload-v1\0";
++    comparator_sha256 hasher;
++    hasher.update(domain, sizeof(domain) - 1);
++    append_fixture_workload(hasher, prompt);
++    append_fixture_workload(hasher, decode);
++    return hasher.hex_digest();
++}
++
++static token_fixture load_token_fixture(const std::string & path) {
++    token_fixture fixture;
++    fixture.path = path;
++    std::ifstream input(path, std::ios::binary);
++    if (!input) {
++        throw std::runtime_error("cannot open token fixture: " + path);
++    }
++
++    comparator_sha256 file_hasher;
++    std::array<char, 64 * 1024> buffer{};
++    uint64_t value = 0;
++    bool have_digits = false;
++    bool comma_pending = false;
++    bool have_token = false;
++
++    const auto finish_token = [&]() {
++        if (!have_digits) {
++            return;
++        }
++        fixture.tokens.push_back(llama_token(value));
++        value = 0;
++        have_digits = false;
++        have_token = true;
++    };
++
++    while (input) {
++        input.read(buffer.data(), buffer.size());
++        const std::streamsize count = input.gcount();
++        if (count <= 0) {
++            continue;
++        }
++        file_hasher.update(reinterpret_cast<const uint8_t *>(buffer.data()), size_t(count));
++        for (std::streamsize i = 0; i < count; ++i) {
++            const unsigned char ch = static_cast<unsigned char>(buffer[size_t(i)]);
++            if (ch >= '0' && ch <= '9') {
++                if (!have_digits) {
++                    comma_pending = false;
++                }
++                const uint64_t digit = uint64_t(ch - '0');
++                if (value > (uint64_t(std::numeric_limits<int32_t>::max()) - digit) / 10) {
++                    throw std::runtime_error("token id exceeds INT32_MAX in fixture: " + path);
++                }
++                value = value * 10 + digit;
++                have_digits = true;
++            } else if (ch == ',') {
++                if (have_digits) {
++                    finish_token();
++                } else if (!have_token || comma_pending) {
++                    throw std::runtime_error("empty token before comma in fixture: " + path);
++                }
++                comma_pending = true;
++            } else if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v') {
++                finish_token();
++            } else {
++                throw std::runtime_error("invalid byte in token fixture: " + path);
++            }
++        }
++    }
++    if (input.bad()) {
++        throw std::runtime_error("failed while reading token fixture: " + path);
++    }
++    finish_token();
++    if (comma_pending) {
++        throw std::runtime_error("trailing comma in token fixture: " + path);
++    }
++    if (fixture.tokens.empty()) {
++        throw std::runtime_error("token fixture is empty: " + path);
++    }
++    fixture.file_sha256 = file_hasher.hex_digest();
++    fixture.tokens_sha256 = token_vector_sha256(fixture.tokens);
++    return fixture;
++}
++
++static bool is_lower_hex(const std::string & value, size_t size) {
++    if (value.size() != size) {
++        return false;
++    }
++    return std::all_of(value.begin(), value.end(), [](char ch) {
++        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
++    });
++}
++
+ template <typename T, typename F> static std::vector<std::string> transform_to_str(const std::vector<T> & values, F f) {
+     std::vector<std::string> str_values;
+     std::transform(values.begin(), values.end(), std::back_inserter(str_values), f);
+@@ -361,6 +649,8 @@ struct cmd_params {
+     bool                             no_warmup;
+     output_formats                   output_format;
+     output_formats                   output_format_stderr;
++    token_fixture                    prompt_fixture;
++    token_fixture                    decode_fixture;
+ };
+ 
+ static const cmd_params cmd_params_defaults = {
+@@ -405,6 +695,8 @@ static const cmd_params cmd_params_defaults = {
+     /* no_warmup            */ false,
+     /* output_format        */ MARKDOWN,
+     /* output_format_stderr */ NONE,
++    /* prompt_fixture       */ {},
++    /* decode_fixture       */ {},
+ };
+ 
+ static void print_usage(int /* argc */, char ** argv) {
+@@ -444,6 +736,9 @@ static void print_usage(int /* argc */, char ** argv) {
+     printf("  -n, --n-gen <n>                                   (default: %s)\n", join(cmd_params_defaults.n_gen, ",").c_str());
+     printf("  -pg <pp,tg>                                       (default: %s)\n", join(transform_to_str(cmd_params_defaults.n_pg, pair_str), ",").c_str());
+     printf("  -d, --n-depth <n>                                 (default: %s)\n", join(cmd_params_defaults.n_depth, ",").c_str());
++    printf("  --prompt-token-fixture <file>                     exact decimal prompt/depth token IDs; one benchmark cell only\n");
++    printf("  --decode-token-fixture <file>                     exact decimal teacher-forced decode input token IDs\n");
++    printf("                                                    separators: comma or ASCII whitespace; lengths and vocab are checked\n");
+     printf("  -b, --batch-size <n>                              (default: %s)\n", join(cmd_params_defaults.n_batch, ",").c_str());
+     printf("  -ub, --ubatch-size <n>                            (default: %s)\n", join(cmd_params_defaults.n_ubatch, ",").c_str());
+     printf("  -ctk, --cache-type-k <t>                          (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_k, ggml_type_name), ",").c_str());
+@@ -597,6 +892,26 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
+                 }
+                 auto p = parse_int_range(argv[i]);
+                 params.n_depth.insert(params.n_depth.end(), p.begin(), p.end());
++            } else if (arg == "--prompt-token-fixture") {
++                if (++i >= argc || params.prompt_fixture.supplied()) {
++                    invalid_param = true;
++                    break;
++                }
++                params.prompt_fixture.path = argv[i];
++                if (params.prompt_fixture.path.empty()) {
++                    invalid_param = true;
++                    break;
++                }
++            } else if (arg == "--decode-token-fixture") {
++                if (++i >= argc || params.decode_fixture.supplied()) {
++                    invalid_param = true;
++                    break;
++                }
++                params.decode_fixture.path = argv[i];
++                if (params.decode_fixture.path.empty()) {
++                    invalid_param = true;
++                    break;
++                }
+             } else if (arg == "-b" || arg == "--batch-size") {
+                 if (++i >= argc) {
+                     invalid_param = true;
+@@ -1075,6 +1390,18 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
+         exit(1);
+     }
+ 
++    try {
++        if (params.prompt_fixture.supplied()) {
++            params.prompt_fixture = load_token_fixture(params.prompt_fixture.path);
++        }
++        if (params.decode_fixture.supplied()) {
++            params.decode_fixture = load_token_fixture(params.decode_fixture.path);
++        }
++    } catch (const std::exception & e) {
++        fprintf(stderr, "error: %s\n", e.what());
++        exit(1);
++    }
++
+     if (!params.hf_repo.empty()) {
+         for (size_t i = 0; i < params.hf_repo.size(); i++) {
+             common_params p;
+@@ -1436,6 +1763,97 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
+     return instances;
+ }
+ 
++static bool validate_fixture_shape(
++        const cmd_params & params,
++        const std::vector<cmd_params_instance> & instances,
++        std::string & error) {
++    const bool fixture_mode = params.prompt_fixture.supplied() || params.decode_fixture.supplied();
++    if (!fixture_mode) {
++        return true;
++    }
++    if (!is_lower_hex(MUSER_BUILD_UPSTREAM_COMMIT, 40)) {
++        error = "fixture mode requires a build sealed to an exact lowercase upstream commit";
++        return false;
++    }
++    if (!is_lower_hex(MUSER_BUILD_PATCH_SHA256, 64)) {
++        error = "fixture mode requires a build sealed with a lowercase 64-character patch SHA-256";
++        return false;
++    }
++    if (instances.size() != 1) {
++        error = "fixture mode requires exactly one benchmark cell per llama-bench process";
++        return false;
++    }
++    if (params.no_warmup) {
++        error = "fixture mode requires the canonical warmup policy; --no-warmup is forbidden";
++        return false;
++    }
++    if (params.reps != 5) {
++        error = "fixture mode requires exactly 5 repetitions";
++        return false;
++    }
++
++    const cmd_params_instance & inst = instances.front();
++    if (inst.n_prompt > 0 && inst.n_depth > 0) {
++        error = "fixture mode cannot combine n_prompt and n_depth in one cell";
++        return false;
++    }
++    if (inst.n_prompt > 0 && inst.n_gen > 0) {
++        error = "fixture mode requires separate prompt and decode benchmark cells";
++        return false;
++    }
++    if (inst.n_depth < 0) {
++        error = "fixture mode does not allow a negative target depth";
++        return false;
++    }
++    const int expected_prompt = inst.n_depth > 0 ? inst.n_depth : inst.n_prompt;
++    if ((expected_prompt > 0) != params.prompt_fixture.supplied()) {
++        error = expected_prompt > 0
++            ? "fixture mode requires a prompt fixture for every prompt/depth token"
++            : "prompt fixture was supplied but this cell has no prompt/depth tokens";
++        return false;
++    }
++    if ((inst.n_gen > 0) != params.decode_fixture.supplied()) {
++        error = inst.n_gen > 0
++            ? "fixture mode requires a decode fixture for every teacher-forced decode token"
++            : "decode fixture was supplied but this cell has no decode tokens";
++        return false;
++    }
++    if (params.prompt_fixture.supplied() && params.prompt_fixture.tokens.size() != size_t(expected_prompt)) {
++        error = "prompt fixture length " + std::to_string(params.prompt_fixture.tokens.size()) +
++                " does not equal active prompt/depth length " + std::to_string(expected_prompt);
++        return false;
++    }
++    if (params.decode_fixture.supplied() && params.decode_fixture.tokens.size() != size_t(inst.n_gen)) {
++        error = "decode fixture length " + std::to_string(params.decode_fixture.tokens.size()) +
++                " does not equal active generation length " + std::to_string(inst.n_gen);
++        return false;
++    }
++    return true;
++}
++
++static bool validate_fixture_vocab(
++        const cmd_params & params,
++        const llama_model * model,
++        std::string & error) {
++    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
++    if (n_vocab <= 0) {
++        error = "loaded model reports an invalid vocabulary size";
++        return false;
++    }
++    const auto validate_one = [&](const char * name, const token_fixture & fixture) {
++        for (size_t i = 0; i < fixture.tokens.size(); ++i) {
++            if (fixture.tokens[i] < 0 || fixture.tokens[i] >= n_vocab) {
++                error = std::string(name) + " fixture token at index " + std::to_string(i) +
++                        " is outside [0, " + std::to_string(n_vocab) + "): " +
++                        std::to_string(fixture.tokens[i]);
++                return false;
++            }
++        }
++        return true;
++    };
++    return validate_one("prompt", params.prompt_fixture) && validate_one("decode", params.decode_fixture);
++}
++
+ struct test {
+     static const std::string build_commit;
+     static const int         build_number;
+@@ -1471,10 +1889,30 @@ struct test {
+     int                      n_prompt;
+     int                      n_gen;
+     int                      n_depth;
++    std::string              comparator_upstream_commit;
++    std::string              comparator_patch_sha256;
++    std::string              prompt_fixture_file_sha256;
++    std::string              prompt_tokens_sha256;
++    std::string              decode_fixture_file_sha256;
++    std::string              decode_tokens_sha256;
++    std::string              workload_sha256;
++    std::string              prompt_output_policy;
++    int                      prompt_output_rows_total;
++    int                      prompt_outer_batches;
++    std::string              decode_output_policy;
++    int                      decode_output_rows_per_token;
++    bool                     decode_sink_registered;
++    std::string              prefill_warmup_policy;
++    std::string              decode_warmup_policy;
++    std::string              decode_repetition_policy;
++    std::string              decode_state_representation;
++    uint64_t                 decode_state_bytes;
++    int                      decode_state_position_max;
++    bool                     no_warmup;
+     std::string              test_time;
+     std::vector<uint64_t>    samples_ns;
+ 
+-    test(const cmd_params_instance & inst, const llama_model * lmodel, const llama_context * ctx) :
++    test(const cmd_params_instance & inst, const llama_model * lmodel, const llama_context * ctx, const cmd_params & params) :
+         cpu_info(get_cpu_info()),
+         gpu_info(get_gpu_info()) {
+ 
+@@ -1510,6 +1948,43 @@ struct test {
+         n_prompt       = inst.n_prompt;
+         n_gen          = inst.n_gen;
+         n_depth        = inst.n_depth;
++        comparator_upstream_commit = MUSER_BUILD_UPSTREAM_COMMIT;
++        comparator_patch_sha256 = MUSER_BUILD_PATCH_SHA256;
++        prompt_fixture_file_sha256 = params.prompt_fixture.file_sha256;
++        prompt_tokens_sha256 = params.prompt_fixture.tokens_sha256;
++        decode_fixture_file_sha256 = params.decode_fixture.file_sha256;
++        decode_tokens_sha256 = params.decode_fixture.tokens_sha256;
++        workload_sha256 = ::workload_sha256(params.prompt_fixture, params.decode_fixture);
++        const bool fixture_prompt = params.prompt_fixture.supplied();
++        const bool fixture_decode = params.decode_fixture.supplied();
++        const int logical_prompt_tokens = inst.n_depth > 0 ? inst.n_depth : inst.n_prompt;
++        prompt_output_policy = fixture_prompt
++            ? "logical_final_logits_only_v1"
++            : "stock_last_token_per_outer_batch_v1";
++        prompt_output_rows_total = fixture_prompt ? 1 : 0;
++        prompt_outer_batches = logical_prompt_tokens > 0
++            ? (logical_prompt_tokens + inst.n_batch - 1) / inst.n_batch
++            : 0;
++        decode_output_policy = fixture_decode
++            ? "lm_head_no_host_readback_v1"
++            : (fixture_prompt ? "not_applicable_v1" : "stock_logits_host_readback_v1");
++        decode_output_rows_per_token = fixture_decode ? 1 : 0;
++        decode_sink_registered = false;
++        prefill_warmup_policy = fixture_decode
++            ? "decode_depth_construct_once_not_warmup_v1"
++            : (fixture_prompt ? "full_logical_prompt_once_v1" : "stock_v1");
++        decode_warmup_policy = fixture_decode
++            ? "target_depth_one_teacher_token_v1"
++            : "not_applicable_v1";
++        decode_repetition_policy = fixture_decode
++            ? "prefix_construct_once_rewind_before_every_repetition_v1"
++            : "not_applicable_v1";
++        decode_state_representation = fixture_decode
++            ? "serialized_state_restore_v1"
++            : "not_applicable_v1";
++        decode_state_bytes = 0;
++        decode_state_position_max = fixture_decode ? inst.n_depth - 1 : -1;
++        no_warmup = params.no_warmup;
+         // RFC 3339 date-time format
+         time_t t       = time(NULL);
+         std::strftime(buf, sizeof(buf), "%FT%TZ", gmtime(&t));
+@@ -1566,6 +2041,13 @@ struct test {
+             "tensor_buft_overrides",            "load_mode",     "embeddings",
+             "no_op_offload",  "no_host",        "fit_target",    "fit_min_ctx",
+             "n_prompt",       "n_gen",          "n_depth",
++            "comparator_upstream_commit",        "comparator_patch_sha256",
++            "prompt_fixture_file_sha256",        "prompt_tokens_sha256",
++            "decode_fixture_file_sha256",        "decode_tokens_sha256", "workload_sha256",
++            "prompt_output_policy",              "prompt_output_rows_total", "prompt_outer_batches",
++            "decode_output_policy",              "decode_output_rows_per_token", "decode_sink_registered",
++            "prefill_warmup_policy",             "decode_warmup_policy", "decode_repetition_policy",
++            "decode_state_representation",       "decode_state_bytes", "decode_state_position_max", "no_warmup",
+             "test_time",      "avg_ns",         "stddev_ns",     "avg_ts",         "stddev_ts"
+         };
+         return fields;
+@@ -1578,11 +2060,15 @@ struct test {
+             field == "poll" || field == "model_size" || field == "model_n_params" || field == "n_gpu_layers" ||
+             field == "main_gpu" || field == "n_prompt" || field == "n_gen" || field == "n_depth" || field == "avg_ns" ||
+             field == "stddev_ns" || field == "no_op_offload" || field == "n_cpu_moe" ||
+-            field == "fit_target" || field == "fit_min_ctx" || field == "flash_attn") {
++            field == "fit_target" || field == "fit_min_ctx" || field == "flash_attn" ||
++            field == "prompt_output_rows_total" || field == "prompt_outer_batches" ||
++            field == "decode_output_rows_per_token" || field == "decode_state_bytes" ||
++            field == "decode_state_position_max") {
+             return INT;
+         }
+         if (field == "f16_kv" || field == "no_kv_offload" || field == "cpu_strict" ||
+-            field == "embeddings" || field == "no_host") {
++            field == "embeddings" || field == "no_host" ||
++            field == "decode_sink_registered" || field == "no_warmup") {
+             return BOOL;
+         }
+         if (field == "avg_ts" || field == "stddev_ts") {
+@@ -1666,6 +2152,26 @@ struct test {
+                                             std::to_string(n_prompt),
+                                             std::to_string(n_gen),
+                                             std::to_string(n_depth),
++                                            comparator_upstream_commit,
++                                            comparator_patch_sha256,
++                                            prompt_fixture_file_sha256,
++                                            prompt_tokens_sha256,
++                                            decode_fixture_file_sha256,
++                                            decode_tokens_sha256,
++                                            workload_sha256,
++                                            prompt_output_policy,
++                                            std::to_string(prompt_output_rows_total),
++                                            std::to_string(prompt_outer_batches),
++                                            decode_output_policy,
++                                            std::to_string(decode_output_rows_per_token),
++                                            std::to_string(decode_sink_registered),
++                                            prefill_warmup_policy,
++                                            decode_warmup_policy,
++                                            decode_repetition_policy,
++                                            decode_state_representation,
++                                            std::to_string(decode_state_bytes),
++                                            std::to_string(decode_state_position_max),
++                                            std::to_string(no_warmup),
+                                             test_time,
+                                             std::to_string(avg_ns()),
+                                             std::to_string(stdev_ns()),
+@@ -2107,11 +2613,156 @@ struct sql_printer : public printer {
+ 
+ struct ctx_state {
+     int depth = 0; // in tokens
++    std::string model;
++    std::string prompt_tokens_sha256;
+ 
+     std::vector<uint8_t> buf; // the llama_context state buffer
+ };
+ 
+-static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_threads) {
++// Fixture decode must execute the output norm and LM head for every token, but
++// it must not sample, argmax, or copy the full vocabulary back to the host.
++// A backend-owned sink keeps one output row live in the model graph while
++// clearing every sampler output.  llama_context::needs_raw_logits() therefore
++// suppresses the ordinary host readback, and build_sampling() has no sampler
++// tensor to add to the graph.
++static const char * teacher_forced_output_sink_name(const llama_sampler * /* smpl */) {
++    return "muser_teacher_forced_lm_head_sink_v1";
++}
++
++[[noreturn]] static void teacher_forced_output_sink_apply(
++        llama_sampler * /* smpl */,
++        llama_token_data_array * /* cur_p */) {
++    GGML_ABORT("teacher-forced output sink reached the CPU sampling path");
++}
++
++static bool teacher_forced_output_sink_backend_init(
++        llama_sampler * /* smpl */,
++        ggml_backend_buffer_type_t /* buft */,
++        uint32_t /* n_outputs_max_per_seq */) {
++    // The sink allocates no backend storage and emits no backend operation.
++    // Always mark the child as backend-capable so the sampler chain cannot
++    // silently skip backend_apply and retain its initial logits tensor.
++    return true;
++}
++
++static void teacher_forced_output_sink_backend_apply(
++        llama_sampler * /* smpl */,
++        ggml_context * /* ctx */,
++        ggml_cgraph * /* gf */,
++        llama_sampler_data * data) {
++    // Do not mutate logits and do not publish any sampler output.  In
++    // particular, adding argmax, sampled, candidate, probability, or logits
++    // tensors here would make teacher-forced decode an unmatched workload.
++    data->logits = nullptr;
++    data->probs = nullptr;
++    data->sampled = nullptr;
++    data->candidates = nullptr;
++}
++
++static llama_sampler_i teacher_forced_output_sink_i = {
++    /* .name              = */ teacher_forced_output_sink_name,
++    /* .accept            = */ nullptr,
++    /* .apply             = */ teacher_forced_output_sink_apply,
++    /* .reset             = */ nullptr,
++    /* .clone             = */ nullptr,
++    /* .free              = */ nullptr,
++    /* .backend_init      = */ teacher_forced_output_sink_backend_init,
++    /* .backend_accept    = */ nullptr,
++    /* .backend_apply     = */ teacher_forced_output_sink_backend_apply,
++    /* .backend_set_input = */ nullptr,
++    /* .backend_reset     = */ nullptr,
++    /* .copy_state        = */ nullptr,
++};
++
++static llama_sampler * create_teacher_forced_output_sink() {
++    llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
++    if (chain == nullptr) {
++        return nullptr;
++    }
++    llama_sampler * sink = llama_sampler_init(&teacher_forced_output_sink_i, nullptr);
++    if (sink == nullptr) {
++        llama_sampler_free(chain);
++        return nullptr;
++    }
++    llama_sampler_chain_add(chain, sink);
++    return chain;
++}
++
++static bool capture_exact_depth_state(
++        llama_context * ctx,
++        ctx_state & state,
++        int depth,
++        const std::string & model,
++        const std::string & prompt_tokens_sha256,
++        std::string & error) {
++    if (depth < 0) {
++        error = "cannot capture a negative fixture depth";
++        return false;
++    }
++    const llama_pos position_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
++    if (position_max != depth - 1) {
++        error = "constructed fixture depth has max position " + std::to_string(position_max) +
++                ", expected " + std::to_string(depth - 1);
++        return false;
++    }
++    state.depth = depth;
++    state.model = model;
++    state.prompt_tokens_sha256 = prompt_tokens_sha256;
++    if (depth == 0) {
++        state.buf.clear();
++        return true;
++    }
++    const size_t state_size = llama_state_seq_get_size(ctx, 0);
++    if (state_size == 0) {
++        error = "fixture depth state reports zero serialized bytes";
++        return false;
++    }
++    state.buf.resize(state_size);
++    const size_t written = llama_state_seq_get_data(ctx, state.buf.data(), state.buf.size(), 0);
++    if (written != state.buf.size()) {
++        error = "fixture depth state serialized " + std::to_string(written) +
++                " bytes, expected " + std::to_string(state.buf.size());
++        state.buf.clear();
++        return false;
++    }
++    return true;
++}
++
++static bool restore_exact_depth_state(
++        llama_context * ctx,
++        const ctx_state & state,
++        std::string & error) {
++    if (state.depth < 0 || (state.depth > 0 && state.buf.empty())) {
++        error = "fixture depth state is invalid";
++        return false;
++    }
++    llama_memory_clear(llama_get_memory(ctx), false);
++    if (state.depth > 0) {
++        const size_t restored = llama_state_seq_set_data(ctx, state.buf.data(), state.buf.size(), 0);
++        if (restored != state.buf.size()) {
++            error = "fixture depth state restored " + std::to_string(restored) +
++                    " bytes, expected " + std::to_string(state.buf.size());
++            return false;
++        }
++    }
++    // State replay is benchmark apparatus, not measured work.  Complete any
++    // backend transfer before the caller starts its timer.
++    llama_synchronize(ctx);
++    const llama_pos position_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
++    if (position_max != state.depth - 1) {
++        error = "restored fixture depth has max position " + std::to_string(position_max) +
++                ", expected " + std::to_string(state.depth - 1);
++        return false;
++    }
++    return true;
++}
++
++static bool test_prompt(
++        llama_context * ctx,
++        int n_prompt,
++        int n_batch,
++        int n_threads,
++        const std::vector<llama_token> * fixture_tokens) {
+     llama_set_n_threads(ctx, n_threads, n_threads);
+ 
+     const llama_model * model   = llama_get_model(ctx);
+@@ -2119,16 +2770,37 @@ static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_th
+     const int32_t       n_vocab = llama_vocab_n_tokens(vocab);
+ 
+     std::vector<llama_token> tokens(n_batch);
++    std::vector<int8_t> fixture_logits(n_batch, 0);
+ 
+     int n_processed = 0;
+ 
+     while (n_processed < n_prompt) {
+         int n_tokens = std::min(n_prompt - n_processed, n_batch);
+-        tokens[0]    = n_processed == 0 && llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab;
+-        for (int i = 1; i < n_tokens; i++) {
+-            tokens[i] = std::rand() % n_vocab;
++        llama_token * token_data = nullptr;
++        if (fixture_tokens != nullptr) {
++            // llama_batch_get_one predates const-correct token input.  Decode
++            // does not mutate token IDs; keep the sealed fixture itself const.
++            token_data = const_cast<llama_token *>(fixture_tokens->data() + n_processed);
++        } else {
++            tokens[0] = n_processed == 0 && llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab;
++            for (int i = 1; i < n_tokens; i++) {
++                tokens[i] = std::rand() % n_vocab;
++            }
++            token_data = tokens.data();
++        }
++        llama_batch batch = llama_batch_get_one(token_data, n_tokens);
++        if (fixture_tokens != nullptr) {
++            // One logical prompt has exactly one output row, even when
++            // llama-bench splits it into multiple <= n_batch decode calls.
++            // Intermediate calls are KV-only; the final logical token alone
++            // requests the final-layer tail, LM head, and host logits row.
++            std::fill(fixture_logits.begin(), fixture_logits.begin() + n_tokens, int8_t(0));
++            if (n_processed + n_tokens == n_prompt) {
++                fixture_logits[size_t(n_tokens - 1)] = 1;
++            }
++            batch.logits = fixture_logits.data();
+         }
+-        int res = llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens));
++        int res = llama_decode(ctx, batch);
+         if (res != 0) {
+             fprintf(stderr, "%s: failed to decode prompt batch, res = %d\n", __func__, res);
+             return false;
+@@ -2140,23 +2812,34 @@ static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_th
+     return true;
+ }
+ 
+-static bool test_gen(llama_context * ctx, int n_gen, int n_threads) {
++static bool test_gen(
++        llama_context * ctx,
++        int n_gen,
++        int n_threads,
++        const std::vector<llama_token> * fixture_tokens) {
+     llama_set_n_threads(ctx, n_threads, n_threads);
+ 
+     const llama_model * model   = llama_get_model(ctx);
+     const llama_vocab * vocab   = llama_model_get_vocab(model);
+     const int32_t       n_vocab = llama_vocab_n_tokens(vocab);
+ 
+-    llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab;
++    llama_token token = fixture_tokens != nullptr
++        ? fixture_tokens->front()
++        : (llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab);
+ 
+     for (int i = 0; i < n_gen; i++) {
++        if (fixture_tokens != nullptr) {
++            token = fixture_tokens->at(size_t(i));
++        }
+         int res = llama_decode(ctx, llama_batch_get_one(&token, 1));
+         if (res != 0) {
+             fprintf(stderr, "%s: failed to decode generation batch, res = %d\n", __func__, res);
+             return false;
+         }
+         llama_synchronize(ctx);
+-        token = std::rand() % n_vocab;
++        if (fixture_tokens == nullptr) {
++            token = std::rand() % n_vocab;
++        }
+     }
+     return true;
+ }
+@@ -2209,6 +2892,19 @@ int llama_bench(int argc, char ** argv) {
+     ggml_backend_load_all();
+ 
+     cmd_params params = parse_cmd_params(argc, argv);
++    std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
++    std::string fixture_error;
++    if (!validate_fixture_shape(params, params_instances, fixture_error)) {
++        fprintf(stderr, "%s: error: %s\n", __func__, fixture_error.c_str());
++        return 1;
++    }
++
++    const std::vector<llama_token> * prompt_fixture_tokens = params.prompt_fixture.supplied()
++        ? &params.prompt_fixture.tokens
++        : nullptr;
++    const std::vector<llama_token> * decode_fixture_tokens = params.decode_fixture.supplied()
++        ? &params.decode_fixture.tokens
++        : nullptr;
+ 
+     auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+     if (!cpu_dev) {
+@@ -2245,8 +2941,6 @@ int llama_bench(int argc, char ** argv) {
+         p_err->print_header(params);
+     }
+ 
+-    std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
+-
+     llama_model *               lmodel    = nullptr;
+     const cmd_params_instance * prev_inst = nullptr;
+ 
+@@ -2311,6 +3005,12 @@ int llama_bench(int argc, char ** argv) {
+             prev_inst = &inst;
+         }
+ 
++        if (!validate_fixture_vocab(params, lmodel, fixture_error)) {
++            fprintf(stderr, "%s: error: %s\n", __func__, fixture_error.c_str());
++            llama_model_free(lmodel);
++            return 1;
++        }
++
+         llama_context * ctx = llama_init_from_model(lmodel, cparams);
+         if (ctx == NULL) {
+             fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+@@ -2318,7 +3018,7 @@ int llama_bench(int argc, char ** argv) {
+             return 1;
+         }
+ 
+-        test t(inst, lmodel, ctx);
++        test t(inst, lmodel, ctx, params);
+ 
+         llama_memory_clear(llama_get_memory(ctx), false);
+ 
+@@ -2348,15 +3048,75 @@ int llama_bench(int argc, char ** argv) {
+ 
+         llama_attach_threadpool(ctx, threadpool, NULL);
+ 
+-        // warmup run
+-        if (!params.no_warmup) {
++        std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> decode_output_sink(
++            nullptr, llama_sampler_free);
++        const bool fixture_decode = decode_fixture_tokens != nullptr;
++
++        if (fixture_decode) {
++            // Decode apparatus is constructed exactly once.  It is not the
++            // prefill-cell warmup and is never included in a measured sample.
++            llama_memory_clear(llama_get_memory(ctx), false);
++            if (params.progress) {
++                fprintf(stderr, "llama-bench: benchmark %d/%zu: construct target depth\n", params_idx, params_count);
++            }
++            if (!test_prompt(ctx, t.n_depth, t.n_batch, t.n_threads, prompt_fixture_tokens)) {
++                fprintf(stderr, "%s: error: failed to construct fixture target depth\n", __func__);
++                llama_free(ctx);
++                llama_model_free(lmodel);
++                exit(1);
++            }
++            if (!capture_exact_depth_state(
++                    ctx,
++                    cstate,
++                    t.n_depth,
++                    inst.model,
++                    t.prompt_tokens_sha256,
++                    fixture_error)) {
++                fprintf(stderr, "%s: error: %s\n", __func__, fixture_error.c_str());
++                llama_free(ctx);
++                llama_model_free(lmodel);
++                exit(1);
++            }
++            t.decode_state_bytes = cstate.buf.size();
++
++            decode_output_sink.reset(create_teacher_forced_output_sink());
++            if (decode_output_sink == nullptr ||
++                !llama_set_sampler(ctx, 0, decode_output_sink.get())) {
++                fprintf(stderr, "%s: error: teacher-forced output sink was not registered as backend-owned\n", __func__);
++                llama_free(ctx);
++                llama_model_free(lmodel);
++                exit(1);
++            }
++            t.decode_sink_registered = true;
++
++            // Warm exactly one fixture token at the target depth.  Restore is
++            // outside timing and ensures warmup observes the same state as a
++            // measured repetition.  The advanced warm state is discarded by
++            // the per-repetition restore below.
++            if (!restore_exact_depth_state(ctx, cstate, fixture_error)) {
++                fprintf(stderr, "%s: error: %s\n", __func__, fixture_error.c_str());
++                llama_free(ctx);
++                llama_model_free(lmodel);
++                exit(1);
++            }
++            if (params.progress) {
++                fprintf(stderr, "llama-bench: benchmark %d/%zu: target-depth teacher-forced warmup\n", params_idx, params_count);
++            }
++            if (!test_gen(ctx, 1, t.n_threads, decode_fixture_tokens)) {
++                fprintf(stderr, "%s: error: failed target-depth fixture decode warmup\n", __func__);
++                llama_free(ctx);
++                llama_model_free(lmodel);
++                exit(1);
++            }
++        } else if (!params.no_warmup) {
++            // A prompt-only fixture warms the full logical prompt once.  It
++            // requests one final logits row total, regardless of outer batch
++            // chunking.  Non-fixture cells retain stock warmup behavior.
+             if (t.n_prompt > 0) {
+                 if (params.progress) {
+                     fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup prompt run\n", params_idx, params_count);
+                 }
+-                //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
+-                bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);
+-                if (!res) {
++                if (!test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads, prompt_fixture_tokens)) {
+                     fprintf(stderr, "%s: error: failed to run prompt warmup\n", __func__);
+                     llama_free(ctx);
+                     llama_model_free(lmodel);
+@@ -2367,8 +3127,7 @@ int llama_bench(int argc, char ** argv) {
+                 if (params.progress) {
+                     fprintf(stderr, "llama-bench: benchmark %d/%zu: warmup generation run\n", params_idx, params_count);
+                 }
+-                bool res = test_gen(ctx, 1, t.n_threads);
+-                if (!res) {
++                if (!test_gen(ctx, 1, t.n_threads, decode_fixture_tokens)) {
+                     fprintf(stderr, "%s: error: failed to run gen warmup\n", __func__);
+                     llama_free(ctx);
+                     llama_model_free(lmodel);
+@@ -2378,10 +3137,22 @@ int llama_bench(int argc, char ** argv) {
+         }
+ 
+         for (int i = 0; i < params.reps; i++) {
+-            llama_memory_clear(llama_get_memory(ctx), false);
++            if (fixture_decode) {
++                if (!restore_exact_depth_state(ctx, cstate, fixture_error)) {
++                    fprintf(stderr, "%s: error: repetition %d state restore: %s\n",
++                            __func__, i + 1, fixture_error.c_str());
++                    llama_free(ctx);
++                    llama_model_free(lmodel);
++                    exit(1);
++                }
++            } else {
++                llama_memory_clear(llama_get_memory(ctx), false);
++            }
+ 
+-            if (t.n_depth > 0) {
+-                bool is_cached = t.n_depth == cstate.depth;
++            if (t.n_depth > 0 && !fixture_decode) {
++                bool is_cached = t.n_depth == cstate.depth &&
++                                 inst.model == cstate.model &&
++                                 t.prompt_tokens_sha256 == cstate.prompt_tokens_sha256;
+ 
+                 if (is_cached) {
+                     // if previously we have computed at this depth, just restore the state
+@@ -2397,7 +3168,7 @@ int llama_bench(int argc, char ** argv) {
+                         fprintf(stderr, "llama-bench: benchmark %d/%zu: depth run %d/%d\n", params_idx, params_count,
+                                 i + 1, params.reps);
+                     }
+-                    bool res = test_prompt(ctx, t.n_depth, t.n_batch, t.n_threads);
++                    bool res = test_prompt(ctx, t.n_depth, t.n_batch, t.n_threads, prompt_fixture_tokens);
+                     if (!res) {
+                         fprintf(stderr, "%s: error: failed to run depth\n", __func__);
+                         llama_free(ctx);
+@@ -2407,6 +3178,8 @@ int llama_bench(int argc, char ** argv) {
+ 
+                     // store the context state for reuse in later runs
+                     cstate.depth = t.n_depth;
++                    cstate.model = inst.model;
++                    cstate.prompt_tokens_sha256 = t.prompt_tokens_sha256;
+                     cstate.buf.resize(llama_state_seq_get_size(ctx, 0));
+                     llama_state_seq_get_data(ctx, cstate.buf.data(), cstate.buf.size(), 0);
+                 } else {
+@@ -2417,6 +3190,8 @@ int llama_bench(int argc, char ** argv) {
+                 }
+             }
+ 
++            // Fixture state restore and its backend synchronization are
++            // deliberately complete before the measured interval begins.
+             uint64_t t_start = get_time_ns();
+ 
+             if (t.n_prompt > 0) {
+@@ -2424,7 +3199,7 @@ int llama_bench(int argc, char ** argv) {
+                     fprintf(stderr, "llama-bench: benchmark %d/%zu: prompt run %d/%d\n", params_idx, params_count,
+                             i + 1, params.reps);
+                 }
+-                bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);
++                bool res = test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads, prompt_fixture_tokens);
+                 if (!res) {
+                     fprintf(stderr, "%s: error: failed to run prompt\n", __func__);
+                     llama_free(ctx);
+@@ -2437,7 +3212,7 @@ int llama_bench(int argc, char ** argv) {
+                     fprintf(stderr, "llama-bench: benchmark %d/%zu: generation run %d/%d\n", params_idx, params_count,
+                             i + 1, params.reps);
+                 }
+-                bool res = test_gen(ctx, t.n_gen, t.n_threads);
++                bool res = test_gen(ctx, t.n_gen, t.n_threads, decode_fixture_tokens);
+                 if (!res) {
+                     fprintf(stderr, "%s: error: failed to run gen\n", __func__);
+                     llama_free(ctx);
+@@ -2450,6 +3225,23 @@ int llama_bench(int argc, char ** argv) {
+             t.samples_ns.push_back(t_ns);
+         }
+ 
++        const bool fixture_mode = prompt_fixture_tokens != nullptr || decode_fixture_tokens != nullptr;
++        if (fixture_mode &&
++            (t.samples_ns.size() != size_t(params.reps) ||
++             std::any_of(t.samples_ns.begin(), t.samples_ns.end(), [](uint64_t value) { return value == 0; }))) {
++            fprintf(stderr, "%s: error: fixture mode requires exactly %d positive raw samples_ns values\n",
++                    __func__, params.reps);
++            llama_free(ctx);
++            llama_model_free(lmodel);
++            exit(1);
++        }
++        if (fixture_decode && !t.decode_sink_registered) {
++            fprintf(stderr, "%s: error: fixture decode completed without the backend-owned output sink\n", __func__);
++            llama_free(ctx);
++            llama_model_free(lmodel);
++            exit(1);
++        }
++
+         if (p) {
+             p->print_test(t);
+             fflush(p->fout);
+diff --git a/tools/perplexity/perplexity.cpp b/tools/perplexity/perplexity.cpp
+index 92f8830..26cd8d8 100644
+--- a/tools/perplexity/perplexity.cpp
++++ b/tools/perplexity/perplexity.cpp
+@@ -3,6 +3,11 @@
+ #include "fit.h"
+ #include "log.h"
+ #include "llama.h"
++#include "../../src/llama-context.h"
++#include "../../src/llama-kv-cache.h"
++#include "../../src/llama-model.h"
++
++#include "ggml-backend.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -11,15 +16,117 @@
+ #include <clocale>
+ #include <cmath>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <ctime>
+ #include <fstream>
++#include <iomanip>
++#include <limits>
+ #include <mutex>
+ #include <random>
+ #include <sstream>
+ #include <thread>
+ #include <vector>
+ 
++#define MUSER_STRINGIFY_INNER(value) #value
++#define MUSER_STRINGIFY(value) MUSER_STRINGIFY_INNER(value)
++
++#ifndef MUSER_COMPARATOR_UPSTREAM_COMMIT
++#define MUSER_COMPARATOR_UPSTREAM_COMMIT UNSEALED
++#endif
++
++#ifndef MUSER_COMPARATOR_PATCH_SHA256
++#define MUSER_COMPARATOR_PATCH_SHA256 UNSEALED
++#endif
++
++static const char MUSER_BUILD_UPSTREAM_MARKER[] =
++    "muser-comparator-upstream=" MUSER_STRINGIFY(MUSER_COMPARATOR_UPSTREAM_COMMIT);
++static const char MUSER_BUILD_PATCH_MARKER[] =
++    "muser-comparator-patch-sha256=" MUSER_STRINGIFY(MUSER_COMPARATOR_PATCH_SHA256);
++static const char * MUSER_BUILD_UPSTREAM_COMMIT =
++    MUSER_BUILD_UPSTREAM_MARKER + sizeof("muser-comparator-upstream=") - 1;
++static const char * MUSER_BUILD_PATCH_SHA256 =
++    MUSER_BUILD_PATCH_MARKER + sizeof("muser-comparator-patch-sha256=") - 1;
++
++static const char * MUSER_TOP10_SUFFIX = ".muser-top10.jsonl";
++static const char * MUSER_RUNTIME_SUFFIX = ".muser-runtime.json";
++
++static bool muser_is_lower_hex(const char * value, size_t size) {
++    if (std::strlen(value) != size) {
++        return false;
++    }
++    for (size_t i = 0; i < size; ++i) {
++        const char ch = value[i];
++        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool muser_has_sealed_build_identity() {
++    return muser_is_lower_hex(MUSER_BUILD_UPSTREAM_COMMIT, 40) &&
++           muser_is_lower_hex(MUSER_BUILD_PATCH_SHA256, 64);
++}
++
++static std::string muser_new_evidence_id() {
++    std::random_device source;
++    std::ostringstream out;
++    out << std::hex << std::setfill('0');
++    for (int i = 0; i < 8; ++i) {
++        out << std::setw(8) << uint32_t(source());
++    }
++    return out.str();
++}
++
++static bool muser_load_exact_token_fixture(
++        const char * path,
++        int32_t n_ctx,
++        int32_t n_vocab,
++        std::vector<llama_token> & tokens,
++        std::string & error) {
++    std::ifstream input(path, std::ios::binary);
++    if (!input) {
++        error = std::string("cannot open exact token fixture: ") + path;
++        return false;
++    }
++    const std::string bytes(
++        (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
++    if (input.bad() || bytes.empty() || bytes.back() != '\n') {
++        error = "exact token fixture must be a nonempty newline-terminated file";
++        return false;
++    }
++    uint64_t value = 0;
++    bool have_digit = false;
++    for (char byte : bytes) {
++        if (byte >= '0' && byte <= '9') {
++            have_digit = true;
++            value = value * 10 + uint64_t(byte - '0');
++            if (value >= uint64_t(n_vocab)) {
++                error = "exact token fixture contains an out-of-vocabulary token";
++                return false;
++            }
++        } else if (byte == '\n' && have_digit) {
++            tokens.push_back(llama_token(value));
++            value = 0;
++            have_digit = false;
++        } else {
++            error = "exact token fixture must contain one unsigned decimal token per line";
++            return false;
++        }
++    }
++    if (tokens.size() != size_t(n_ctx)) {
++        error = "exact token fixture length differs from the requested context";
++        return false;
++    }
++    // Upstream perplexity deliberately requires two contexts even when the
++    // caller requests one chunk. Duplicate the exact fixture only to satisfy
++    // that preflight; --chunks 1 evaluates and writes the first copy.
++    const std::vector<llama_token> duplicate = tokens;
++    tokens.insert(tokens.end(), duplicate.begin(), duplicate.end());
++    return true;
++}
++
+ #if defined(_MSC_VER)
+ #pragma warning(disable: 4244 4267) // possible loss of data
+ #endif
+@@ -106,6 +213,102 @@ static double log_softmax(int n_vocab, const float * logits, uint16_t * log_prob
+     return max_logit + log_sum_exp - logits[tok];
+ }
+ 
++struct muser_exact_candidate {
++    int   id    = -1;
++    float logit = -std::numeric_limits<float>::infinity();
++};
++
++static bool muser_better_candidate(float logit, int token_id, float best_logit, int best_id) {
++    return best_id < 0 || logit > best_logit || (logit == best_logit && token_id < best_id);
++}
++
++static bool muser_find_exact_top10(
++        int n_vocab,
++        const float * logits,
++        std::array<muser_exact_candidate, 10> & result,
++        std::string & error) {
++    for (int token_id = 0; token_id < n_vocab; ++token_id) {
++        const float logit = logits[token_id];
++        if (!std::isfinite(logit)) {
++            error = "non-finite pre-quantization llama logit at token " + std::to_string(token_id);
++            return false;
++        }
++        for (size_t rank = 0; rank < result.size(); ++rank) {
++            if (!muser_better_candidate(logit, token_id, result[rank].logit, result[rank].id)) {
++                continue;
++            }
++            for (size_t shift = result.size() - 1; shift > rank; --shift) {
++                result[shift] = result[shift - 1];
++            }
++            result[rank] = {token_id, logit};
++            break;
++        }
++    }
++    if (result.back().id < 0) {
++        error = "could not identify ten distinct pre-quantization llama candidates";
++        return false;
++    }
++    return true;
++}
++
++static bool muser_write_exact_top10_rows(
++        std::ostream & out,
++        int n_vocab,
++        const float * logits,
++        const int * tokens,
++        int n_token,
++        const std::vector<uint16_t> & log_probs,
++        const std::vector<double> & target_nlls,
++        int chunk,
++        int first_position,
++        std::string & error) {
++    const int nv = 2*((n_vocab + 1)/2) + 4;
++    for (int row = 0; row < n_token; ++row) {
++        std::array<muser_exact_candidate, 10> top10;
++        if (!muser_find_exact_top10(n_vocab, logits + size_t(row)*n_vocab, top10, error)) {
++            error += " (chunk " + std::to_string(chunk) + ", position " +
++                     std::to_string(first_position + row) + ")";
++            return false;
++        }
++        const double target_nll = target_nlls.at(size_t(row));
++        if (!std::isfinite(target_nll) || target_nll < 0.0) {
++            error = "invalid exact target NLL (chunk " + std::to_string(chunk) +
++                    ", position " + std::to_string(first_position + row) + ")";
++            return false;
++        }
++
++        const uint16_t * encoded = log_probs.data() + size_t(row)*nv;
++        float scale = 0.0f;
++        float minimum_log_probability = 0.0f;
++        std::memcpy(&scale, encoded, sizeof(scale));
++        std::memcpy(&minimum_log_probability, encoded + 2, sizeof(minimum_log_probability));
++        const uint16_t * quantized = encoded + 4;
++
++        out << "{\"chunk\":" << chunk
++            << ",\"position\":" << first_position + row
++            << ",\"input_token_id\":" << tokens[row]
++            << ",\"target_token_id\":" << tokens[row + 1]
++            << ",\"target_nll\":" << target_nll
++            << ",\"row_scale\":" << scale
++            << ",\"minimum_log_probability\":" << minimum_log_probability
++            << ",\"candidates\":[";
++        for (size_t rank = 0; rank < top10.size(); ++rank) {
++            if (rank != 0) {
++                out << ',';
++            }
++            out << "{\"token_id\":" << top10[rank].id
++                << ",\"logit\":" << top10[rank].logit
++                << ",\"quantized_u16\":" << quantized[top10[rank].id] << '}';
++        }
++        out << "]}\n";
++        if (!out) {
++            error = "failed while writing exact top-10 sidecar";
++            return false;
++        }
++    }
++    return true;
++}
++
+ static void process_logits(
+     int n_vocab, const float * logits, const int * tokens, int n_token, std::vector<std::thread> & workers,
+     double & nll, double & nll2, float * logit_history, float * prob_history
+@@ -141,12 +344,15 @@ static void process_logits(
+     }
+ }
+ 
+-static void process_logits(std::ostream& out, int n_vocab, const float * logits, const int * tokens, int n_token,
+-        std::vector<std::thread> & workers, std::vector<uint16_t> & log_probs, double & nll, double & nll2) {
++static bool process_logits(std::ostream& out, std::ostream & top10_out,
++        int n_vocab, const float * logits, const int * tokens, int n_token,
++        std::vector<std::thread> & workers, std::vector<uint16_t> & log_probs,
++        double & nll, double & nll2, int chunk, int first_position, std::string & error) {
+     std::mutex mutex;
+     const int nv = 2*((n_vocab + 1)/2) + 4;
++    std::vector<double> target_nlls(size_t(n_token), 0.0);
+     int counter = 0;
+-    auto compute = [&mutex, &counter, &log_probs, &nll, &nll2, n_vocab, logits, tokens, n_token, nv] () {
++    auto compute = [&mutex, &counter, &log_probs, &target_nlls, &nll, &nll2, n_vocab, logits, tokens, n_token, nv] () {
+         double local_nll  = 0;
+         double local_nll2 = 0;
+         while (true) {
+@@ -158,6 +364,7 @@ static void process_logits(std::ostream& out, int n_vocab, const float * logits,
+             }
+             lock.unlock();
+             const double v = log_softmax(n_vocab, logits + size_t(i)*n_vocab, log_probs.data() + size_t(i)*nv, tokens[i+1]);
++            target_nlls[size_t(i)] = v;
+             local_nll += v;
+             local_nll2 += v*v;
+         }
+@@ -170,6 +377,13 @@ static void process_logits(std::ostream& out, int n_vocab, const float * logits,
+         w.join();
+     }
+     out.write((const char *)log_probs.data(), size_t(n_token)*nv*sizeof(uint16_t));
++    if (!out) {
++        error = "failed while writing quantized llama log-probabilities";
++        return false;
++    }
++    return muser_write_exact_top10_rows(
++        top10_out, n_vocab, logits, tokens, n_token, log_probs, target_nlls,
++        chunk, first_position, error);
+ }
+ 
+ struct kl_divergence_result {
+@@ -441,7 +655,11 @@ static results_perplexity perplexity_v2(llama_context * ctx, const common_params
+     return {tokens, std::exp(nll / count), logit_history, prob_history};
+ }
+ 
+-static results_perplexity perplexity(llama_context * ctx, const common_params & params, const int32_t n_ctx) {
++static results_perplexity perplexity(
++        llama_context * ctx,
++        const common_params & params,
++        const int32_t n_ctx,
++        const std::string & muser_evidence_id) {
+     if (params.ppl_stride > 0) {
+         return perplexity_v2(ctx, params);
+     }
+@@ -458,21 +676,45 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+     GGML_ASSERT(!llama_vocab_get_add_eos(vocab));
+ 
+     std::ofstream logits_stream;
++    std::ofstream top10_stream;
+     if (!params.logits_file.empty()) {
+         logits_stream.open(params.logits_file.c_str(), std::ios::binary);
+         if (!logits_stream.is_open()) {
+             LOG_ERR("%s: failed to open %s for writing\n", __func__, params.logits_file.c_str());
+             return {};
+         }
++        const std::string top10_path = params.logits_file + MUSER_TOP10_SUFFIX;
++        top10_stream.open(top10_path.c_str());
++        if (!top10_stream.is_open()) {
++            LOG_ERR("%s: failed to open %s for writing\n", __func__, top10_path.c_str());
++            return {};
++        }
++        top10_stream << std::setprecision(std::numeric_limits<float>::max_digits10);
+         LOG_INF("%s: saving all logits to %s\n", __func__, params.logits_file.c_str());
++        LOG_INF("%s: saving exact pre-quantization top-10 rows to %s\n", __func__, top10_path.c_str());
+         logits_stream.write("_logits_", 8);
+         logits_stream.write(reinterpret_cast<const char *>(&n_ctx), sizeof(n_ctx));
+     }
+ 
+     auto tim1 = std::chrono::high_resolution_clock::now();
+-    LOG_INF("%s: tokenizing the input ..\n", __func__);
+-
+-    std::vector<llama_token> tokens = common_tokenize(ctx, params.prompt, true);
++    std::vector<llama_token> tokens;
++    const char * fixture_path = std::getenv("MUSER_COMPARATOR_TOKEN_FIXTURE");
++    if (fixture_path != nullptr && fixture_path[0] != '\0') {
++        if (params.logits_file.empty()) {
++            LOG_ERR("%s: exact token fixture requires --save-all-logits\n", __func__);
++            return {};
++        }
++        std::string fixture_error;
++        if (!muser_load_exact_token_fixture(
++                fixture_path, n_ctx, llama_vocab_n_tokens(vocab), tokens, fixture_error)) {
++            LOG_ERR("%s: %s\n", __func__, fixture_error.c_str());
++            return {};
++        }
++        LOG_INF("%s: loaded exact %d-token comparator fixture\n", __func__, n_ctx);
++    } else {
++        LOG_INF("%s: tokenizing the input ..\n", __func__);
++        tokens = common_tokenize(ctx, params.prompt, true);
++    }
+ 
+     auto tim2 = std::chrono::high_resolution_clock::now();
+     LOG_INF("%s: tokenization took %g ms\n",__func__,1e-3*std::chrono::duration_cast<std::chrono::microseconds>(tim2-tim1).count());
+@@ -525,6 +767,24 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+         logits_stream.write((const char *)tokens.data(), n_chunk*n_ctx*sizeof(tokens[0]));
+         const int nv = 2*((n_vocab + 1)/2) + 4;
+         log_probs.resize(size_t(n_ctx) * nv);
++        top10_stream
++            << "{\"schema\":\"muser.llama_perplexity.exact_top10.v3\""
++            << ",\"evidence_id\":\"" << muser_evidence_id << "\""
++            << ",\"upstream_commit\":\"" << MUSER_BUILD_UPSTREAM_COMMIT << "\""
++            << ",\"patch_sha256\":\"" << MUSER_BUILD_PATCH_SHA256 << "\""
++            << ",\"context_length\":" << n_ctx
++            << ",\"vocab_size\":" << n_vocab
++            << ",\"chunks\":" << n_chunk
++            << ",\"scored_rows\":" << n_chunk*(n_ctx - 1 - n_ctx/2)
++            << ",\"logit_stage\":\"llama_get_logits_before_log_softmax_and_u16_quantization\""
++            << ",\"target_nll_stage\":\"raw_float32_logits_before_floor_and_u16_quantization\""
++            << ",\"float_encoding\":\"decimal_max_digits10_roundtrip_binary32\""
++            << ",\"rank_order\":\"logit_desc_token_id_asc\""
++            << ",\"quantized_cross_binding\":\"row_scale_minimum_log_probability_and_candidate_u16\"}\n";
++        if (!logits_stream || !top10_stream) {
++            LOG_ERR("%s: failed while writing logits evidence headers\n", __func__);
++            return {std::move(tokens), -1, {}, {}};
++        }
+     }
+ 
+     // We get the logits for all the tokens in the context window (params.n_ctx)
+@@ -616,9 +876,14 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+ 
+             llama_token * tokens_data = tokens.data() + start + seq*n_ctx + first;
+             if (!params.logits_file.empty()) {
+-                process_logits(logits_stream, n_vocab, all_logits,
++                std::string evidence_error;
++                if (!process_logits(logits_stream, top10_stream, n_vocab, all_logits,
+                         tokens_data, n_ctx - 1 - first,
+-                        workers, log_probs, nll, nll2);
++                        workers, log_probs, nll, nll2, i + seq, first, evidence_error)) {
++                    LOG_ERR("%s: %s\n", __func__, evidence_error.c_str());
++                    llama_batch_free(batch);
++                    return {std::move(tokens), -1, {}, {}};
++                }
+             } else {
+                 process_logits(n_vocab, all_logits,
+                         tokens_data, n_ctx - 1 - first,
+@@ -645,6 +910,16 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+     }
+     LOG("\n");
+ 
++    if (!params.logits_file.empty()) {
++        logits_stream.flush();
++        top10_stream.flush();
++        if (!logits_stream || !top10_stream) {
++            LOG_ERR("%s: failed while finalizing logits evidence artifacts\n", __func__);
++            llama_batch_free(batch);
++            return {std::move(tokens), -1, {}, {}};
++        }
++    }
++
+     nll2 /= count;
+     nll /= count;
+     const double ppl = exp(nll);
+@@ -2005,6 +2280,131 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
+     LOG("Same top p: %6.3lf ± %5.3lf %%\n", 100.0*same_top_p, 100.0*sqrt(same_top_p*(1.0 - same_top_p)/(kld.count - 1)));
+ }
+ 
++static const char * muser_device_type_name(ggml_backend_dev_t device) {
++    if (device == nullptr) {
++        return "none";
++    }
++    switch (ggml_backend_dev_type(device)) {
++        case GGML_BACKEND_DEVICE_TYPE_CPU:   return "cpu";
++        case GGML_BACKEND_DEVICE_TYPE_GPU:   return "gpu";
++        case GGML_BACKEND_DEVICE_TYPE_IGPU:  return "igpu";
++        case GGML_BACKEND_DEVICE_TYPE_ACCEL: return "accelerator";
++        case GGML_BACKEND_DEVICE_TYPE_META:  return "meta";
++    }
++    return "unknown";
++}
++
++static bool muser_is_gpu_device(ggml_backend_dev_t device) {
++    if (device == nullptr) {
++        return false;
++    }
++    const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
++    return type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
++}
++
++static bool muser_write_runtime_evidence(
++        const common_params & params,
++        llama_context * ctx,
++        int32_t requested_n_ctx,
++        const std::string & evidence_id,
++        const results_perplexity & results) {
++    const std::string path = params.logits_file + MUSER_RUNTIME_SUFFIX;
++    std::ofstream out(path.c_str());
++    if (!out.is_open()) {
++        LOG_ERR("%s: failed to open %s for writing\n", __func__, path.c_str());
++        return false;
++    }
++    out << std::setprecision(std::numeric_limits<double>::max_digits10);
++
++    const llama_cparams & cparams = ctx->get_cparams();
++    const llama_model & internal_model = ctx->get_model();
++    const llama_model * model = llama_get_model(ctx);
++    const int32_t transformer_layers = llama_model_n_layer(model);
++    int32_t gpu_transformer_layers = 0;
++    int32_t cpu_transformer_layers = 0;
++    int32_t other_transformer_layers = 0;
++    for (int32_t layer = 0; layer < transformer_layers; ++layer) {
++        ggml_backend_dev_t device = internal_model.dev_layer(layer);
++        if (muser_is_gpu_device(device)) {
++            ++gpu_transformer_layers;
++        } else if (device != nullptr && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++            ++cpu_transformer_layers;
++        } else {
++            ++other_transformer_layers;
++        }
++    }
++    ggml_backend_dev_t output_device = internal_model.dev_output();
++
++    const llama_kv_cache * kv_cache = dynamic_cast<const llama_kv_cache *>(llama_get_memory(ctx));
++    const char * kv_kind = kv_cache == nullptr ? "not-classic-kv-cache" : "llama_kv_cache";
++    const char * type_k = kv_cache == nullptr ? "unknown" : ggml_type_name(kv_cache->type_k());
++    const char * type_v = kv_cache == nullptr ? "unknown" : ggml_type_name(kv_cache->type_v());
++
++    const int32_t chunk_max = int32_t(results.tokens.size() / size_t(requested_n_ctx));
++    const int32_t chunks = params.n_chunks < 0 ? chunk_max : std::min(params.n_chunks, chunk_max);
++    const int64_t scored_rows = int64_t(chunks) * (requested_n_ctx - 1 - requested_n_ctx/2);
++    const bool all_transformer_layers_gpu = gpu_transformer_layers == transformer_layers;
++    const bool output_layer_gpu = muser_is_gpu_device(output_device);
++
++    out << "{\n"
++        << "  \"schema\": \"muser.llama_perplexity.runtime.v1\",\n"
++        << "  \"evidence_id\": \"" << evidence_id << "\",\n"
++        << "  \"upstream_commit\": \"" << MUSER_BUILD_UPSTREAM_COMMIT << "\",\n"
++        << "  \"patch_sha256\": \"" << MUSER_BUILD_PATCH_SHA256 << "\",\n"
++        << "  \"artifacts\": {\"quantized_logits\": \"caller_path\", \"exact_top10_suffix\": \""
++        << MUSER_TOP10_SUFFIX << "\"},\n"
++        << "  \"requested\": {\n"
++        << "    \"context_length\": " << requested_n_ctx << ",\n"
++        << "    \"batch_size\": " << params.n_batch << ",\n"
++        << "    \"ubatch_size\": " << params.n_ubatch << ",\n"
++        << "    \"chunks\": " << params.n_chunks << ",\n"
++        << "    \"threads\": " << params.cpuparams.n_threads << ",\n"
++        << "    \"threads_batch\": " << params.cpuparams_batch.n_threads << ",\n"
++        << "    \"gpu_layer_limit\": " << params.n_gpu_layers << ",\n"
++        << "    \"flash_attention_type\": \"" << llama_flash_attn_type_name(params.flash_attn_type) << "\",\n"
++        << "    \"cache_type_k\": \"" << ggml_type_name(params.cache_type_k) << "\",\n"
++        << "    \"cache_type_v\": \"" << ggml_type_name(params.cache_type_v) << "\"\n"
++        << "  },\n"
++        << "  \"effective\": {\n"
++        << "    \"context_length\": " << cparams.n_ctx << ",\n"
++        << "    \"context_length_per_sequence\": " << cparams.n_ctx_seq << ",\n"
++        << "    \"batch_size\": " << cparams.n_batch << ",\n"
++        << "    \"ubatch_size\": " << cparams.n_ubatch << ",\n"
++        << "    \"sequence_capacity\": " << cparams.n_seq_max << ",\n"
++        << "    \"threads\": " << cparams.n_threads << ",\n"
++        << "    \"threads_batch\": " << cparams.n_threads_batch << ",\n"
++        << "    \"flash_attention\": " << (cparams.flash_attn ? "true" : "false") << ",\n"
++        << "    \"flash_attention_auto\": " << (cparams.auto_fa ? "true" : "false") << ",\n"
++        << "    \"offload_kqv\": " << (cparams.offload_kqv ? "true" : "false") << ",\n"
++        << "    \"kv_cache_kind\": \"" << kv_kind << "\",\n"
++        << "    \"cache_type_k\": \"" << type_k << "\",\n"
++        << "    \"cache_type_v\": \"" << type_v << "\",\n"
++        << "    \"model_transformer_layers\": " << transformer_layers << ",\n"
++        << "    \"gpu_layer_limit\": " << internal_model.n_gpu_layers() << ",\n"
++        << "    \"gpu_transformer_layers\": " << gpu_transformer_layers << ",\n"
++        << "    \"cpu_transformer_layers\": " << cpu_transformer_layers << ",\n"
++        << "    \"other_transformer_layers\": " << other_transformer_layers << ",\n"
++        << "    \"all_transformer_layers_gpu\": " << (all_transformer_layers_gpu ? "true" : "false") << ",\n"
++        << "    \"output_layer_device_type\": \"" << muser_device_type_name(output_device) << "\",\n"
++        << "    \"output_layer_gpu\": " << (output_layer_gpu ? "true" : "false") << ",\n"
++        << "    \"full_model_gpu_offload\": " << (all_transformer_layers_gpu && output_layer_gpu ? "true" : "false") << "\n"
++        << "  },\n"
++        << "  \"result\": {\n"
++        << "    \"completed\": true,\n"
++        << "    \"chunks\": " << chunks << ",\n"
++        << "    \"scored_rows\": " << scored_rows << ",\n"
++        << "    \"perplexity\": " << results.ppl_value << "\n"
++        << "  }\n"
++        << "}\n";
++    out.flush();
++    if (!out) {
++        LOG_ERR("%s: failed while writing %s\n", __func__, path.c_str());
++        return false;
++    }
++    LOG_INF("%s: saved effective runtime evidence to %s\n", __func__, path.c_str());
++    return true;
++}
++
+ // satisfies -Wmissing-declarations
+ int llama_perplexity(int argc, char ** argv);
+ 
+@@ -2022,6 +2422,16 @@ int llama_perplexity(int argc, char ** argv) {
+         return 1;
+     }
+ 
++    const bool muser_teacher_evidence_mode =
++        !params.logits_file.empty() &&
++        !params.hellaswag && !params.winogrande && !params.multiple_choice && !params.kl_divergence;
++    if (muser_teacher_evidence_mode && !muser_has_sealed_build_identity()) {
++        LOG_ERR("%s: --save-all-logits evidence requires the pinned upstream and a sealed patch SHA-256\n", __func__);
++        return 1;
++    }
++    const std::string muser_evidence_id =
++        muser_teacher_evidence_mode ? muser_new_evidence_id() : "";
++
+     const int32_t n_ctx = params.n_ctx;
+ 
+     if (n_ctx <= 0) {
+@@ -2077,6 +2487,7 @@ int llama_perplexity(int argc, char ** argv) {
+     }
+ 
+     struct results_perplexity results;
++    bool muser_evidence_ok = true;
+     if (params.hellaswag) {
+         hellaswag_score(ctx, params);
+     } else if (params.winogrande) {
+@@ -2086,7 +2497,14 @@ int llama_perplexity(int argc, char ** argv) {
+     } else if (params.kl_divergence) {
+         kl_divergence(ctx, params);
+     } else {
+-        results = perplexity(ctx, params, n_ctx);
++        results = perplexity(ctx, params, n_ctx, muser_evidence_id);
++        if (muser_teacher_evidence_mode) {
++            muser_evidence_ok = std::isfinite(results.ppl_value) && results.ppl_value > 0.0 &&
++                muser_write_runtime_evidence(params, ctx, n_ctx, muser_evidence_id, results);
++            if (!muser_evidence_ok) {
++                LOG_ERR("%s: failed to complete sealed llama teacher evidence\n", __func__);
++            }
++        }
+     }
+ 
+     LOG("\n");
+@@ -2095,5 +2513,5 @@ int llama_perplexity(int argc, char ** argv) {
+ 
+     llama_backend_free();
+ 
+-    return 0;
++    return muser_evidence_ok ? 0 : 1;
+ }
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 6d1aa43..6ff6f77 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -13,7 +13,9 @@
+ #include "log.h"
+ 
+ #include <atomic>
++#include <chrono>
+ #include <clocale>
++#include <cstdlib>
+ #include <exception>
+ #include <signal.h>
+ #include <thread> // for std::thread::hardware_concurrency
+@@ -48,6 +50,17 @@ void llama_server_terminate() {
+     }
+ }
+ 
++class muser_benchmark_shutdown_response final : public server_http_res {
++  public:
++    void on_complete() override {
++        // The comparator exits itself after the response has reached the
++        // client. No campaign process sends a signal or kills the server.
++        if (shutdown_handler) {
++            shutdown_handler(0);
++        }
++    }
++};
++
+ 
+ // wrapper function that handles exceptions and logs errors
+ // this is to make sure handler_t never throws exceptions; instead, it returns an error response
+@@ -174,6 +187,34 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         return 1;
+     }
+ 
++    std::string muser_benchmark_token;
++    uint64_t muser_benchmark_deadline_seconds = 0;
++    if (const char * token = std::getenv("MUSER_COMPARATOR_BENCHMARK_TOKEN")) {
++        muser_benchmark_token = token;
++        if (muser_benchmark_token.size() < 32 ||
++            (ctx_http.hostname != "127.0.0.1" && ctx_http.hostname != "::1" &&
++             ctx_http.hostname != "localhost")) {
++            SRV_ERR("%s", "Muser comparator benchmark mode requires a 32-byte token and loopback bind\n");
++            return 1;
++        }
++        const char * deadline = std::getenv("MUSER_COMPARATOR_BENCHMARK_DEADLINE_SECONDS");
++        char * end = nullptr;
++        const unsigned long long parsed = deadline ? std::strtoull(deadline, &end, 10) : 0;
++        if (!deadline || end == deadline || *end != '\0' || parsed == 0) {
++            SRV_ERR("%s", "Muser comparator benchmark mode requires a positive self-deadline\n");
++            return 1;
++        }
++        muser_benchmark_deadline_seconds = parsed;
++        std::thread([muser_benchmark_deadline_seconds]() {
++            std::this_thread::sleep_for(std::chrono::seconds(muser_benchmark_deadline_seconds));
++            std::fprintf(stderr, "llama-server: Muser qualification self-deadline expired\n");
++            std::_Exit(124);
++        }).detach();
++    } else if (std::getenv("MUSER_COMPARATOR_BENCHMARK_DEADLINE_SECONDS")) {
++        SRV_ERR("%s", "Muser comparator benchmark token and deadline must be supplied together\n");
++        return 1;
++    }
++
+     //
+     // Router
+     //
+@@ -272,6 +313,22 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+ 
++    if (!muser_benchmark_token.empty()) {
++        ctx_http.post("/__muser/benchmark/shutdown", ex_wrapper(
++            [muser_benchmark_token](const server_http_req & req) -> server_http_res_ptr {
++                if (req.body != muser_benchmark_token) {
++                    auto res = std::make_unique<server_http_res>();
++                    res->status = 403;
++                    res->data = "{\"error\":\"invalid benchmark token\"}";
++                    return res;
++                }
++                auto res = std::make_unique<muser_benchmark_shutdown_response>();
++                res->data = "{\"ok\":true}";
++                return res;
++            }
++        ));
++    }
++
+     // resumable streaming: a child binds the local session factories, the router binds
+     // proxies that resolve the owning child, see server-stream.h
+     server_http_context::handler_t stream_get_h;

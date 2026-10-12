@@ -1,0 +1,240 @@
+{
+  "schema": "muser.native-onboarding-identity.v1",
+  "status": "frozen",
+  "source_runtime_identity_sha256": "e2485c468d4467edccc8385cf62545216970df7b8eef6ecd2b10be5fe0a68ee7",
+  "product_lane": "single-producer GX10 NVFP4 prefill with native Mac NVFP4 decode",
+  "checkpoint": {
+    "repository": "RedHatAI/Muse-Glimmer-30B-NVFP4",
+    "revision": "d5109a1d187c27bd1734e81844e71aa4d964e66a",
+    "directory": "RedHatAI-Muse-Glimmer-30B-NVFP4-d5109a1",
+    "total_bytes": 23409256035,
+    "artifact_sha256": "169ed694cd61d540db0c1ac0d0c088a0f6cc299f592b60cc1bc49b7ae9f4c9e1",
+    "files": [
+      {
+        "filename": ".gitattributes",
+        "bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "filename": "README.md",
+        "bytes": 3798,
+        "sha256": "57d0f6486b20fd35ea4e1a327a79b38f0a7d54f663077065d6c9423a94cb98a3"
+      },
+      {
+        "filename": "chat_template.jinja",
+        "bytes": 7167,
+        "sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e"
+      },
+      {
+        "filename": "config.json",
+        "bytes": 21140,
+        "sha256": "554f41ec2cee1897c3ddff634b150fd6a0c2cba2822ef02dce636db33a4a70e8"
+      },
+      {
+        "filename": "generation_config.json",
+        "bytes": 185,
+        "sha256": "3c19298aaee5e91409c71fd2417bbf5910df7e3aa0afd65b5a9e05ff850c95c7"
+      },
+      {
+        "filename": "model-00001-of-00002.safetensors",
+        "bytes": 19999768552,
+        "sha256": "adbb49484526d0d252f59f147634505db3b0df7c76b392d120145770c6af71b4"
+      },
+      {
+        "filename": "model-00002-of-00002.safetensors",
+        "bytes": 3380973016,
+        "sha256": "a530af78f13588a6cd2223e2f1956ef458dc236266dd045fbeb80a18acaff353"
+      },
+      {
+        "filename": "model.safetensors.index.json",
+        "bytes": 269298,
+        "sha256": "63aeab8fe9256732e5800b87e8eb95f95df82d369edd1a456b91b1c405482b28"
+      },
+      {
+        "filename": "processor_config.json",
+        "bytes": 1084,
+        "sha256": "97e2a486dd9866b81f40cf4b8bc0c9ced9a7cd8a5bc65aa4cc2f4de0712dae77"
+      },
+      {
+        "filename": "recipe.yaml",
+        "bytes": 342,
+        "sha256": "b8ea1ba2017a0366dfde3fe92b81036a644dc2bb9ab558c3846af798e2f0b06d"
+      },
+      {
+        "filename": "tokenizer.json",
+        "bytes": 28129897,
+        "sha256": "c9dbee66967b58f31a7c27f723c3760da3526ccd0427578e8905b0abb0031c4d"
+      },
+      {
+        "filename": "tokenizer_config.json",
+        "bytes": 79986,
+        "sha256": "4dda8d9709954d7b3f1d917319f9b915f1b995f77fbbd8fb9379e56842d84f1b"
+      }
+    ],
+    "runtime_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/spark-runtime-v13.json",
+    "runtime_receipt_sha256": "484e6e75361157be1822e15d386bbbbc187668179373d4a752263398f20435fa"
+  },
+  "producer_image": {
+    "tag": "ghcr.io/high-performance-ai-lab/muser-gx10-vllm-native:nvfp4-20260828",
+    "image_id": "sha256:99b3c74d4ee836336cc20e89bf37251bcd9341662643bdeaedfb5325ab880792",
+    "receipt": "muser-build-receipt://nvfp4-release-20260828/nvfp4-vllm-image-release-final3-20260828.json",
+    "receipt_sha256": "972575b36b3e2b0124fab884dc4214fe39dececb217093295dfd7c823d6eb1f6",
+    "archive": {
+      "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst",
+      "compression": "zstd",
+      "bytes": 9550405774,
+      "sha256": "eff84d1d6af33c7bd4bff1cb2ae4129f79bf3dab2cfd64b62f93efcad348a2fa",
+      "parts": [
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-00",
+          "bytes": 1900000000,
+          "sha256": "c953b1704e9321f1434016bf69dbf815857b677f30b74a6cb197aea670c07530",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-00"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-01",
+          "bytes": 1900000000,
+          "sha256": "10468d3db6eb4b9149dcb67d62ea87a253500b3c86d25adddcb8661548ae32da",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-01"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-02",
+          "bytes": 1900000000,
+          "sha256": "8b0f040a0ec65c9bc88392519372965f2a258f93f67fa6e59324f8f7ed17546c",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-02"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-03",
+          "bytes": 1900000000,
+          "sha256": "37d592612fee03ba47b1595284eb726760365b1435ff4ae8e9db7e59841fe54b",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-03"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-04",
+          "bytes": 1900000000,
+          "sha256": "10b8a7bfe8bdad79edd63bea1b3556127cc0029510af54c043850b089816e819",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-04"
+        },
+        {
+          "filename": "muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-05",
+          "bytes": 50405774,
+          "sha256": "e4fda4efb9678e0d28f4fd09843999343c662915b902899a946dea3f181b025f",
+          "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/muser-gx10-vllm-native-nvfp4-20260828.tar.zst.part-05"
+        }
+      ]
+    }
+  },
+  "vllm_overlay": {
+    "adapter_sha256": "79617e15dbe8a78ed2abbc3020b3d7021ced95a6a36d4770eb5ad5a8af0e3863",
+    "vllm_commit": "6adad08767583f52eb4d2122111af0bf638ed5e6",
+    "receipt": "release/nvfp4-runtime-overlay-v2.json",
+    "receipt_sha256": "b8914862d9239411dbbe2cdc5976aa1975ad4607246d2f1329f796916fae166d"
+  },
+  "rope_cache": {
+    "schema": "muser.vllm-rope-cache.v2",
+    "bytes": 67108864,
+    "sha256": "948949af0c4b0106dd26071d839e9643688c4c5a24f57a0fe9872d2ad49b2131"
+  },
+  "consumer": {
+    "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf",
+    "bytes": 19552725248,
+    "sha256": "dc9865ef9770324b1b5d7bdebc7fc6b2c9fb125084fe2461b6f5168c552193b1",
+    "parts": [
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-00",
+        "bytes": 1900000000,
+        "sha256": "32e277f18ba2701bb91fc363bd3b2ddd0a436a77fd876bf26dfd6f993fbf0a72",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-00"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-01",
+        "bytes": 1900000000,
+        "sha256": "b370e64cb3a672c58b2dc005a6c942998b3e3ba243a8ff610f41aa73dfc22368",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-01"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-02",
+        "bytes": 1900000000,
+        "sha256": "611771f763e4d0d368c08370038c4e76d661fa5aa9a0348cc17a9eeadc936ce8",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-02"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-03",
+        "bytes": 1900000000,
+        "sha256": "729e0d7366a5e957e7194d074fc03d2dc0b7203cc0f0f42d4c5e5b0d52ec14fc",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-03"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-04",
+        "bytes": 1900000000,
+        "sha256": "86d0f81dd2d56e2b10b4f223bd3477d8166fcbcb985de0c725b24ffb9ab99736",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-04"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-05",
+        "bytes": 1900000000,
+        "sha256": "9e325c00505327846605686ad5fd252c80f0bfa6206480baf5751f31a1bab346",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-05"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-06",
+        "bytes": 1900000000,
+        "sha256": "34bc48fb6b8711c84bad5a0584983b124c47f0f6f3ccc98d69ca37199e86e3f7",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-06"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-07",
+        "bytes": 1900000000,
+        "sha256": "0beb1c598007fcf4dbdbcb2085d225e5f8450f0b0f90c4d2e6e7125963800f9d",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-07"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-08",
+        "bytes": 1900000000,
+        "sha256": "91a570043d3c2fb7f5f0eeab383a4a97b4ea88a24986da950274a967f4b6cc3a",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-08"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-09",
+        "bytes": 1900000000,
+        "sha256": "8bf75768adc8898ab41349e0183eb593d41e73699cb76559df6e5c2c461fc9d2",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-09"
+      },
+      {
+        "filename": "Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-10",
+        "bytes": 552725248,
+        "sha256": "bd86de0982bb9b5429ccd85443be47901ec7446b0b5db8c8afe424a8f0c81417",
+        "url": "https://github.com/High-Performance-AI-Lab/muser/releases/download/nvfp4-consumer-d5109a1-v1/Muse-Glimmer-30B-RedHatAI-NVFP4-native-d5109a1-v1.gguf.part-10"
+      }
+    ],
+    "tokenizer_sha256": "61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055",
+    "chat_template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
+    "context_policy_sha256": "d2913ca9de09e906681fca2addf753b8a561aee41d4383a4f2a791e386186600",
+    "target_cache_identity_sha256": "c34ce9b3deabd53b69280b00a9d1098844b97ec854d230b9f4d556acd9d776a3",
+    "repack_receipt": "muser-build-receipt://nvfp4-redhat-d5109a1-20260816/mac-native-repack-receipt-v1.json",
+    "repack_receipt_sha256": "ccac21c54d765f62f15acf0c496b946cd129db5f6ca5f026be13cd5705e9da21"
+  },
+  "onboarding_qualification": {
+    "schema": "muser.native-text-onboarding.v1",
+    "prompt_tokens": 2048,
+    "output_tokens": 256,
+    "repetitions": 3,
+    "prompt_sha256": "149ac0d9c37c957823e53c0637b52a38f2ac601089dbda9f98eec4bc5f369030",
+    "require_exact_tokens": true,
+    "require_deterministic_remote_output": true,
+    "full_logits": {
+      "mode": "bounded-drift",
+      "maximum_absolute": 11.0,
+      "maximum_mean_absolute": 1.25
+    },
+    "basis": "muser-receipt://nvfp4-f4-native-text-p4-accelerator-20260817/20260817T074427Z-44c761545afa47d78f8407734f8d2145.command.log"
+  },
+  "evidence": [
+    "release/gx10-cross-vendor-math-v1.json",
+    "muser-receipt://wizard-validation-20260823/attempt-7-native-live-20260824T042900Z/logs/test-rope-decisive-20260824T043946Z.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/live-image-provenance.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/source-match-verdict.log",
+    "muser-receipt://release-readiness-campaign-20260823/attempt-1/phase2/registry-after.json"
+  ],
+  "ledger_basis": "release/gx10-cross-vendor-math-v1.json pins the canonical NCO RoPE cache; docs/goal-parity-ledger-2026-08.md pins final-image provenance"
+}

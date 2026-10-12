@@ -1,0 +1,125 @@
+{
+  "task_id": "edit-001",
+  "category": "code_edit",
+  "difficulty": "easy",
+  "prompt": "The file 'greeting.py' prints a misspelled 'Helo' instead of 'Hello'. Read the file, fix the typo using apply_patch, and then report 'done'.",
+  "tools_shown_to_model": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file from the workspace. Returns {path,content}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "apply_patch",
+        "description": "Replace the first occurrence of `find` with `replace` in a file. Returns {ok,path}.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "find": {
+              "type": "string"
+            },
+            "replace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "find",
+            "replace"
+          ]
+        }
+      }
+    }
+  ],
+  "expected_trajectory": [
+    {
+      "role": "system",
+      "content": "You are muser's agentic assistant. Solve the user's task by calling the provided tools. Rules:\n1. Use tools to obtain facts and to change state; never fabricate a tool result.\n2. Call one or more tools as needed, then reason over their results.\n3. When the task is complete, output your reasoning followed by a final line of the exact form `ANSWER: <result>` and nothing after it.\n4. For a JSON answer, put the raw JSON object after `ANSWER:`.\n5. Be concise and deterministic; do not ask the user questions."
+    },
+    {
+      "role": "user",
+      "content": "The file 'greeting.py' prints a misspelled 'Helo' instead of 'Hello'. Read the file, fix the typo using apply_patch, and then report 'done'."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\": \"greeting.py\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "name": "read_file",
+      "content": "{\"path\": \"greeting.py\", \"content\": \"print('Helo, world!')\\n\"}"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "apply_patch",
+            "arguments": "{\"path\": \"greeting.py\", \"find\": \"Helo\", \"replace\": \"Hello\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_2",
+      "name": "apply_patch",
+      "content": "{\"ok\": true, \"path\": \"greeting.py\"}"
+    },
+    {
+      "role": "assistant",
+      "content": "ANSWER: done"
+    }
+  ],
+  "final_world": {
+    "files": {
+      "greeting.py": "print('Hello, world!')\n"
+    },
+    "kv": {}
+  },
+  "extracted_answer": "done",
+  "checker": {
+    "kind": "final_state"
+  },
+  "expected": {
+    "files": {
+      "greeting.py": "print('Hello, world!')\n"
+    }
+  },
+  "checker_result": {
+    "passed": true,
+    "detail": "final_state ok"
+  }
+}

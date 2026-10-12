@@ -1,0 +1,55 @@
+{
+  "schema": "muser.human-test.config.v1",
+  "run_id": "human-YYYYMMDD",
+  "requirements": {
+    "min_ram_bytes": 96000000000,
+    "min_free_disk_bytes": 80000000000
+  },
+  "artifacts": {
+    "muser": {"path": "/REPLACE/muser", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0755"},
+    "muser_dflash": {"path": "/REPLACE/muser-dflash-qualify", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0755"},
+    "metallib": {"path": "/REPLACE/llama.metallib", "bytes": 7314848, "sha256": "c018ab9c01c18bf79a83272d25973a981138bdeec9ac677e63afef07b21ac033", "mode": "0644"},
+    "metallib_receipt": {"path": "/REPLACE/metallib-source-receipt.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "model": {"path": "/REPLACE/muse-glimmer-30B-kquant-17gb.gguf", "bytes": 16756681056, "sha256": "7e9b74b7c8875e9e265695df9613bf6290f2392e479ce740495a129019c488d8", "mode": "0644"},
+    "dflash": {"path": "/REPLACE/dflash-kquant.gguf", "bytes": 1631205312, "sha256": "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", "mode": "0644"},
+    "mmproj": {"path": "/REPLACE/mmproj-kquant.gguf", "bytes": 1400328928, "sha256": "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", "mode": "0644"},
+    "mtmd_bridge": {"path": "/REPLACE/libmuser_mtmd_bridge.dylib", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0755"},
+    "mtmd_receipt": {"path": "/REPLACE/mtmd-receipt.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "vision_image": {"path": "/REPLACE/test-image.png", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "api_key": {"path": "/REPLACE/api-key", "bytes": 65, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "llama_server": {"path": "/REPLACE/llama-server", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0755"},
+    "llama_receipt": {"path": "/REPLACE/llama-source-receipt.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "prompt_fixture": {"path": "/REPLACE/prompt-2048.txt", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "tls_source_cert": {"path": "/REPLACE/source/server.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "tls_source_key": {"path": "/REPLACE/source/server-key.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "tls_source_ca": {"path": "/REPLACE/ca.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "tls_destination_cert": {"path": "/REPLACE/destination/server.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "tls_destination_key": {"path": "/REPLACE/destination/server-key.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "tls_destination_ca": {"path": "/REPLACE/ca.pem", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"},
+    "gx_cluster_config": {"path": "/REPLACE/gx10/cluster.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "gx_container_receipt": {"path": "/REPLACE/gx10-container.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "gx_node_registry": {"path": "/REPLACE/nodes.toml", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0600"},
+    "release_manifest": {"path": "/REPLACE/docs/release-artifacts.json", "bytes": 0, "sha256": "REPLACE_WITH_64_HEX", "mode": "0644"}
+  },
+  "ports": {
+    "dashboard": 4957,
+    "engine": 4958,
+    "migration_source": 4959,
+    "migration_destination": 4960,
+    "batching_base": 4970,
+    "target_muser": 4980,
+    "target_llama": 4981,
+    "dflash": 4982
+  },
+  "output_root": "/REPLACE/new-human-test-output",
+  "sections": {
+    "dashboard": true,
+    "real_model": true,
+    "migration": true,
+    "batching": true,
+    "target_comparator": true,
+    "dflash": true,
+    "gx": false
+  },
+  "browser_hold": false
+}

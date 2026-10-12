@@ -1,0 +1,18 @@
+# Reviewed 2026-08-27, one finding at a time. Every generic-api-key hit in
+# this repository is a pinned SHA-256 content digest, the RFC 6455 example
+# WebSocket nonce, or an all-hex test literal - none is a credential. These
+# exact values are allowlisted; any NEW value still fails the scan.
+[allowlist]
+description = "reviewed digest-shaped false positives (pinned content hashes)"
+regexes = [
+    '''0123456789abcdef0123456789abcdef''',
+    '''4def931ffce5ee681e6193710f7219d0f39402a32cb2d6049ee5295307f20921''',
+    '''61e73226502f8f54455555990c0000852247bbec32b107730ec544bc0b738055''',
+    '''686c4631dfcb1af63257c2424765204f864463cb34d4d4e6e9f5dcdf1bdbe04c''',
+    '''791f77305adabfcc6ed5741c707fbdd16658a735be6412ea97ba1b014ff096f5''',
+    '''7cf4ad3299c6bab6f1e9a8bee21b61d05afaab92482e7a4ef9b08558b6e44c33''',
+    '''822e806d774c5d5365baa502f71bc1acd10213894f4f41c33dfc2719380a553a''',
+    '''95995afebb6e2de066c5bbc65a85519b20f9bf92c16b502b0ceade266532eb9a''',
+    '''985457030c09813e6a368b81b5e432f34ea5749d76eadd6bd1e7dd904c8875b1''',
+    '''dGhlIHNhbXBsZSBub25jZQ==''',
+]

@@ -1,0 +1,24 @@
+[package]
+name = "muser-kvpack"
+description = "Muse layout, exact resident/durable prefix reuse, session-state bridge, and cache-economics adapter for the audited in-tree kvpack snapshot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "muser_kvpack"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+muser-engine = { path = "../muser-engine" }
+kvpack-core = { workspace = true }
+kvpack = { workspace = true }
+kvpack-handoff = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

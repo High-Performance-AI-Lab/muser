@@ -1,0 +1,11 @@
+{
+  "schema": "muser.dflash-route-policy.v1",
+  "status": "v0.1-metal-only",
+  "auto_route": "metal",
+  "ane_gate": {
+    "required": false,
+    "passed": false,
+    "same_build_receipt": null
+  },
+  "policy": "v0.1 auto routing is permanently Metal; ANE is an explicit experimental post-release backend and is never selected by auto"
+}
